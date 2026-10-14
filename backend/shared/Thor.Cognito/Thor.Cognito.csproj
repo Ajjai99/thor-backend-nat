@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <RootNamespace>Thor.Cognito</RootNamespace>
+    <AssemblyName>Thor.Cognito</AssemblyName>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <IsPackable>true</IsPackable>
+    <PackageId>Thor.Cognito</PackageId>
+    <Version>0.1.0</Version>
+    <Description>Shared Cognito user-pool mechanics used by both Thor.Api (tenant IdP management) and tenant provisioning (app-client OAuth setup).</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="AWSSDK.CognitoIdentityProvider" Version="4.0.103.2" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,226 @@
+{
+  "Comment": "Thor reconcile workflow: soft-deletes what one scan no longer saw, once per scan. Started by the scan-completion gate as reconcile-{scanId} once every manifest of the scan has finished ingestion, and before the scan's graph load, which applies these deletions to Neptune. StartRun decides per source and entity type - delete within the source's threshold, propose over it - records every decision and stages the deletions in Postgres; a Distributed Map soft-deletes each wave's windows of staged rows; Finalize drops the scan's ledger and staging. Its end - success or failure - is an execution event the scan-completion gate watches: either way the gate then starts the graph load. Terraform substitutes the placeholders with templatefile; validate edits with: aws stepfunctions validate-state-machine-definition.",
+  "StartAt": "Envelope",
+  "States": {
+    "Envelope": {
+      "Type": "Pass",
+      "Parameters": {
+        "Request.$": "$"
+      },
+      "ResultPath": "$",
+      "Next": "StartRun"
+    },
+    "StartRun": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Comment": "Opens the scan's reconcile row, refuses a scan still ingesting or already graph-loading, decides per eligible source and type, records each decision, stages the deletions and hands back wave zero.",
+      "Parameters": {
+        "FunctionName": "${lambda_arn_start_run}",
+        "Payload.$": "$.Request"
+      },
+      "ResultSelector": {
+        "WaveIndex.$": "$.Payload.WaveIndex",
+        "Total.$": "$.Payload.Total",
+        "Chunks.$": "$.Payload.Chunks",
+        "HasMore.$": "$.Payload.HasMore"
+      },
+      "ResultPath": "$.Wave",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "IntervalSeconds": 30,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.Error",
+          "Next": "RecordFailure"
+        }
+      ],
+      "Next": "MoreWaves"
+    },
+    "MoreWaves": {
+      "Type": "Choice",
+      "Comment": "The loop. HasMore is true while the wave carries chunks.",
+      "Choices": [
+        {
+          "Variable": "$.Wave.HasMore",
+          "BooleanEquals": true,
+          "Next": "DeleteWave"
+        }
+      ],
+      "Default": "Finalize"
+    },
+    "DeleteWave": {
+      "Type": "Map",
+      "Label": "DeleteWave",
+      "Comment": "One item per window of staged rows; each invocation soft-deletes its window in one transaction. Items arrive complete from StartRun and NextWave, so there is no ItemSelector. Each body holds one tenant database connection. No failure is tolerated - a window left undeleted would leave its rows in the graph - and a rerun window changes nothing twice, so the retry and a redrive are safe.",
+      "ItemsPath": "$.Wave.Chunks",
+      "MaxConcurrency": ${map_max_concurrency},
+      "ResultPath": null,
+      "ItemProcessor": {
+        "ProcessorConfig": {
+          "Mode": "DISTRIBUTED",
+          "ExecutionType": "STANDARD"
+        },
+        "StartAt": "DeleteChunk",
+        "States": {
+          "DeleteChunk": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::lambda:invoke",
+            "Parameters": {
+              "FunctionName": "${lambda_arn_delete_chunk}",
+              "Payload.$": "$"
+            },
+            "ResultSelector": {
+              "FromSeq.$": "$.Payload.FromSeq",
+              "ToSeq.$": "$.Payload.ToSeq",
+              "EntitiesDeleted.$": "$.Payload.EntitiesDeleted",
+              "EdgesDeleted.$": "$.Payload.EdgesDeleted"
+            },
+            "Retry": [
+              {
+                "ErrorEquals": [
+                  "States.ALL"
+                ],
+                "IntervalSeconds": 15,
+                "MaxAttempts": 3,
+                "BackoffRate": 2
+              }
+            ],
+            "End": true
+          }
+        }
+      },
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.Error",
+          "Next": "RecordFailure"
+        }
+      ],
+      "Next": "NextWave"
+    },
+    "NextWave": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Comment": "Hands back the next wave of windows over the staged rows, or an empty one once every row is covered. Reads nothing: the wave carries the staged total.",
+      "Parameters": {
+        "FunctionName": "${lambda_arn_next_wave}",
+        "Payload": {
+          "Request.$": "$.Request",
+          "WaveIndex.$": "$.Wave.WaveIndex",
+          "Total.$": "$.Wave.Total"
+        }
+      },
+      "ResultSelector": {
+        "WaveIndex.$": "$.Payload.WaveIndex",
+        "Total.$": "$.Payload.Total",
+        "Chunks.$": "$.Payload.Chunks",
+        "HasMore.$": "$.Payload.HasMore"
+      },
+      "ResultPath": "$.Wave",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "IntervalSeconds": 30,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.Error",
+          "Next": "RecordFailure"
+        }
+      ],
+      "Next": "MoreWaves"
+    },
+    "Finalize": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Comment": "Drops the scan's seen-ledger and the run's staging, and closes the reconcile row - completed_with_proposals when any source was over its threshold.",
+      "Parameters": {
+        "FunctionName": "${lambda_arn_finalize}",
+        "Payload.$": "$.Request"
+      },
+      "ResultPath": null,
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "IntervalSeconds": 30,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.Error",
+          "Next": "RecordFailure"
+        }
+      ],
+      "Next": "WorkflowSucceeded"
+    },
+    "RecordFailure": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Comment": "Closes the scan's reconcile row as failed - the one place that sees a chunk killed by its timeout. No DLQ: the gate started this run once and the row records why. A closed row, failed or not, is what lets the gate start the graph load: a failed reconcile holds nothing back.",
+      "Parameters": {
+        "FunctionName": "${lambda_arn_record_failure}",
+        "Payload": {
+          "Request.$": "$.Request",
+          "Error.$": "$.Error"
+        }
+      },
+      "ResultPath": null,
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 2,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Comment": "Failing to record the failure must not swallow it; the execution still ends failed with the original error in its history.",
+          "ResultPath": null,
+          "Next": "WorkflowFailed"
+        }
+      ],
+      "Next": "WorkflowFailed"
+    },
+    "WorkflowSucceeded": {
+      "Type": "Succeed"
+    },
+    "WorkflowFailed": {
+      "Type": "Fail",
+      "Error": "ReconcileFailed",
+      "Cause": "See the scan's reconcile workflow row for the error. Once the graph load has started a redrive is refused, so a failed reconcile is retried by the next scan."
+    }
+  }
+}

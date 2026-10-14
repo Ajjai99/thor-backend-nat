@@ -1,0 +1,245 @@
+terraform {
+  required_version = ">= 1.15"
+
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 6.0"
+    }
+    # Only for time_sleep.bulk_load_role_propagation below.
+    time = {
+      source  = "hashicorp/time"
+      version = "~> 0.12"
+    }
+  }
+}
+
+locals {
+  name_prefix = "thor-${var.environment}-neptune"
+}
+
+resource "aws_neptune_subnet_group" "neptune" {
+  name       = local.name_prefix
+  subnet_ids = var.private_subnet_ids
+
+  tags = merge(var.tags, {
+    Name = local.name_prefix
+  })
+
+  # Cloud Custodian auto-tags this after creation and an SCP blocks removing it — ignore tags to avoid fighting it.
+  lifecycle {
+    ignore_changes = [tags, tags_all]
+  }
+}
+
+# No inline ingress — separate aws_vpc_security_group_ingress_rule resources below, same
+# dependency-cycle reasoning as modules/aurora and modules/ecs (an SG's own inline ingress block
+# referencing another module's SG would force those modules to depend on each other's SG output
+# before either SG exists).
+resource "aws_security_group" "neptune" {
+  name        = "${local.name_prefix}-sg"
+  description = "Neptune cluster - ingress per consumer_security_group_ids on 8182 (Gremlin), egress scoped to the VPC"
+  vpc_id      = var.vpc_id
+
+  egress {
+    description = "Within VPC only"
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = [var.vpc_cidr]
+  }
+
+  # S3's IP range isn't part of vpc_cidr, so the rule above doesn't cover it — bulk loads read
+  # CSVs from S3 via the gateway endpoint, which needs its own, separately-scoped egress rule.
+  dynamic "egress" {
+    for_each = var.s3_prefix_list_id != "" ? [var.s3_prefix_list_id] : []
+    content {
+      description     = "S3 gateway endpoint (bulk load reads CSVs from S3)"
+      from_port       = 443
+      to_port         = 443
+      protocol        = "tcp"
+      prefix_list_ids = [egress.value]
+    }
+  }
+
+  tags = merge(var.tags, {
+    Name = "${local.name_prefix}-sg"
+  })
+
+  # Cloud Custodian auto-tags this after creation and an SCP blocks removing it — ignore tags to avoid fighting it.
+  lifecycle {
+    ignore_changes = [tags, tags_all]
+  }
+}
+
+# create_ingress is its own explicit flag (wired to enable_compute at the root), not inferred from
+# consumer_security_group_ids being empty — an empty map is ambiguous (compute intentionally off
+# vs. a bug in how the caller built the map), whereas the root module always knows definitively
+# whether its ECS consumers exist. One rule per map entry; map keys (not the SG IDs) drive for_each
+# so this still works when an ID is only known after apply (see modules/aurora's identical pattern).
+resource "aws_vpc_security_group_ingress_rule" "neptune" {
+  for_each = var.create_ingress ? var.consumer_security_group_ids : {}
+
+  security_group_id            = aws_security_group.neptune.id
+  description                  = "Gremlin from ${each.key}"
+  referenced_security_group_id = each.value
+  from_port                    = 8182
+  to_port                      = 8182
+  ip_protocol                  = "tcp"
+
+  tags = merge(var.tags, {
+    Name = "${local.name_prefix}-${each.key}-ingress"
+  })
+
+  # Cloud Custodian auto-tags this after creation and an SCP blocks removing it — ignore tags to avoid fighting it.
+  lifecycle {
+    ignore_changes = [tags, tags_all]
+  }
+}
+
+# The role the cluster itself assumes to pull bulk-load CSVs from S3 (the loader's iamRoleArn —
+# Thor.Graph's INeptuneBulkLoaderClient). Distinct from any consumer's own role: those authorize
+# the neptune-db:StartLoaderJob call; this one is what Neptune uses to read the files. Reaching S3
+# from the cluster also needs modules/network's S3 gateway endpoint, which already exists.
+data "aws_iam_policy_document" "bulk_load_assume" {
+  statement {
+    actions = ["sts:AssumeRole"]
+
+    principals {
+      type        = "Service"
+      identifiers = ["rds.amazonaws.com"]
+    }
+  }
+}
+
+resource "aws_iam_role" "bulk_load" {
+  count = var.create_bulk_load_role ? 1 : 0
+
+  name                 = "${local.name_prefix}-bulk-load"
+  assume_role_policy   = data.aws_iam_policy_document.bulk_load_assume.json
+  permissions_boundary = var.iam_permissions_boundary_arn
+  tags                 = var.tags
+
+  # Cloud Custodian auto-tags this after creation and an SCP blocks removing it — ignore tags to avoid fighting it.
+  lifecycle {
+    ignore_changes = [tags, tags_all]
+  }
+}
+
+data "aws_iam_policy_document" "bulk_load_permissions" {
+  count = var.create_bulk_load_role ? 1 : 0
+
+  statement {
+    actions   = ["s3:GetObject", "s3:ListBucket"]
+    resources = concat(var.bulk_load_bucket_arns, [for arn in var.bulk_load_bucket_arns : "${arn}/*"])
+  }
+}
+
+resource "aws_iam_role_policy" "bulk_load" {
+  count = var.create_bulk_load_role ? 1 : 0
+
+  name   = "${local.name_prefix}-bulk-load-permissions"
+  role   = aws_iam_role.bulk_load[0].id
+  policy = data.aws_iam_policy_document.bulk_load_permissions[0].json
+}
+
+# IAM is eventually consistent, and AddRoleToDBCluster validates the role at attach time. A role
+# created seconds earlier is rejected with InvalidParameterValue on AWS_ROLE_INTEGRATION even though
+# its trust policy, inline policy and permissions boundary are all correct — verified by
+# simulate-principal-policy against the live role, which returned allowed for both S3 actions while
+# the attach was still failing. Re-running the same apply minutes later succeeds unchanged.
+#
+# This is a sleep because there is nothing better to wait on. The attach is an argument on
+# aws_neptune_cluster, not its own resource: the provider has aws_rds_cluster_role_association but no
+# aws_neptune_cluster_role_association, so a failed attach fails the cluster and halts the rest of
+# the apply. Only the first apply in an environment pays the wait — time_sleep persists in state.
+resource "time_sleep" "bulk_load_role_propagation" {
+  count = var.create_bulk_load_role ? 1 : 0
+
+  depends_on      = [aws_iam_role_policy.bulk_load]
+  create_duration = "60s"
+}
+
+# iam_database_authentication_enabled, no master-password secret — Neptune uses SigV4/IAM DB auth
+# instead of Aurora's manage_master_user_password, so consumers authenticate via their own IAM
+# role/policy against the neptune-db:* actions, not a Secrets-Manager credential.
+resource "aws_neptune_cluster" "neptune" {
+  cluster_identifier                  = local.name_prefix
+  engine                              = "neptune"
+  engine_version                      = var.engine_version
+  neptune_subnet_group_name           = aws_neptune_subnet_group.neptune.name
+  vpc_security_group_ids              = [aws_security_group.neptune.id]
+  iam_database_authentication_enabled = true
+  storage_encrypted                   = true
+  iam_roles                           = var.create_bulk_load_role ? [aws_iam_role.bulk_load[0].arn] : []
+
+  backup_retention_period   = var.backup_retention_days
+  deletion_protection       = var.deletion_protection
+  skip_final_snapshot       = var.skip_final_snapshot
+  final_snapshot_identifier = var.skip_final_snapshot ? null : "${local.name_prefix}-final"
+
+  # Underscore before v2 here — unlike aws_rds_cluster's serverlessv2_scaling_configuration (see
+  # modules/aurora/main.tf's comment). A real hashicorp/aws provider-schema inconsistency between
+  # the two resource types, not something to "fix" on either side.
+  serverless_v2_scaling_configuration {
+    min_capacity = var.min_capacity
+    max_capacity = var.max_capacity
+  }
+
+  tags = merge(var.tags, {
+    Name = local.name_prefix
+  })
+
+  # Two reasons, and the second is the one that actually bit. iam_roles references the role but not
+  # its inline policy, so ordering them is necessary but not sufficient: even fully policied, a
+  # freshly created role is rejected by AddRoleToDBCluster until IAM propagates. time_sleep supplies
+  # the wait and already depends on the policy, so this single edge covers both.
+  depends_on = [time_sleep.bulk_load_role_propagation]
+
+  # Cloud Custodian auto-tags this after creation and an SCP blocks removing it — ignore tags to avoid fighting it.
+  lifecycle {
+    ignore_changes = [tags, tags_all]
+  }
+}
+
+# Serverless v2 still needs one instance resource — this is what actually runs; the cluster above
+# is storage/control only (same split as modules/aurora). Identifier must stay under
+# "thor-<environment>-neptune-*" — the CI/CD deploy role's Neptune IAM statement
+# (docs/infra_pipeline_setup_guide.md) is scoped to exactly that wildcard.
+resource "aws_neptune_cluster_instance" "neptune" {
+  identifier         = "${local.name_prefix}-instance"
+  cluster_identifier = aws_neptune_cluster.neptune.id
+  instance_class     = "db.serverless"
+  engine             = aws_neptune_cluster.neptune.engine
+  engine_version     = aws_neptune_cluster.neptune.engine_version
+
+  tags = merge(var.tags, {
+    Name = "${local.name_prefix}-instance"
+  })
+
+  # Cloud Custodian auto-tags this after creation and an SCP blocks removing it — ignore tags to avoid fighting it.
+  lifecycle {
+    ignore_changes = [tags, tags_all]
+  }
+}
+
+# Second instance for Multi-AZ failover — kept as its own resource, not for_each, so it's purely
+# additive (same pattern as modules/aurora's aurora_instance_2). Storage itself already replicates
+# across 3 AZs regardless of instance count; this is what gives fast compute-level failover instead
+# of needing a brand-new instance provisioned after the primary goes down.
+resource "aws_neptune_cluster_instance" "neptune_2" {
+  identifier         = "${local.name_prefix}-instance-2"
+  cluster_identifier = aws_neptune_cluster.neptune.id
+  instance_class     = "db.serverless"
+  engine             = aws_neptune_cluster.neptune.engine
+  engine_version     = aws_neptune_cluster.neptune.engine_version
+
+  tags = merge(var.tags, {
+    Name = "${local.name_prefix}-instance-2"
+  })
+
+  # Cloud Custodian auto-tags this after creation and an SCP blocks removing it — ignore tags to avoid fighting it.
+  lifecycle {
+    ignore_changes = [tags, tags_all]
+  }
+}

@@ -1,0 +1,145 @@
+variable "environment" {
+  type        = string
+  description = "Environment name (dev, qa, prod)"
+}
+
+variable "vpc_id" {
+  type        = string
+  description = "VPC to deploy into"
+}
+
+variable "vpc_cidr" {
+  type        = string
+  description = "CIDR of the VPC — scopes each service security group's egress to VPC-only (no NAT/IGW)"
+}
+
+variable "private_subnet_ids" {
+  type        = list(string)
+  description = "Private subnets for the ECS tasks"
+}
+
+variable "enable_container_insights" {
+  type        = bool
+  description = "Enable ECS Container Insights on the cluster"
+  default     = true
+}
+
+variable "iam_permissions_boundary_arn" {
+  type        = string
+  description = "ARN of the Console-created thor-<environment>-role-boundary policy"
+}
+
+variable "enable_compute" {
+  type        = bool
+  description = "Whether to create the ECS services (task defs, ECS services, NLB/target groups, per-service IAM/SG) for local.active_services. The cluster, Service Connect namespace, and ECR repos (ecr.tf) are created regardless — set false to bring up an environment's cluster/registry only, before real images exist."
+  default     = true
+}
+
+variable "services" {
+  description = "Per-service configuration, keyed by service name (thor-api, task-api, intelligence-engine). expose_via_nlb=true gets a private NLB (nlb.tf, thor-api only) reached via VPC Link from API Gateway, not directly from the internet; services with expose_via_nlb=false accept traffic only from the public services' security groups, reachable internally via Service Connect using the map key as the client_alias dns_name. deployment_strategy=BLUE_GREEN is a per-deploy toggle (deployment_strategy_plan.md reserves it for DB-schema-change deploys) — for a publicly-exposed service it shifts the NLB's production listener between blue/green target groups; for an internal service it's a plain task-set swap."
+  type = map(object({
+    container_image        = string
+    container_port         = optional(number, 8080)
+    cpu                    = optional(number, 512)
+    memory                 = optional(number, 1024)
+    desired_count          = optional(number, 2)
+    min_healthy_percent    = optional(number, 100)
+    max_percent            = optional(number, 200)
+    health_check_path      = optional(string, "/health")
+    log_retention_days     = optional(number, 30)
+    environment_variables  = optional(map(string), {})
+    secrets                = optional(map(string), {})
+    expose_via_nlb         = optional(bool, false)
+    nlb_listener_port      = optional(number, 80)
+    nlb_test_listener_port = optional(number, 8081)
+    deployment_strategy    = optional(string, "ROLLING")
+    bake_time_in_minutes   = optional(number, 5)
+  }))
+
+  validation {
+    condition     = alltrue([for k, v in var.services : contains(["ROLLING", "BLUE_GREEN"], v.deployment_strategy)])
+    error_message = "deployment_strategy must be either \"ROLLING\" or \"BLUE_GREEN\" for every service."
+  }
+
+  validation {
+    condition     = alltrue([for k, v in var.services : v.bake_time_in_minutes >= 0 && v.bake_time_in_minutes <= 1440])
+    error_message = "bake_time_in_minutes must be between 0 and 1440 (24 hours) for every service."
+  }
+}
+
+variable "nlb_certificate_arn" {
+  type        = string
+  description = "ACM certificate for the NLB's TLS listener (NLB <-> ECS re-encryption). \"\" (default) keeps the NLB on plain TCP and the publicly-exposed service's container healthcheck on plain HTTP — today's behavior. Set only where the re-encryption path is actually wanted."
+  default     = ""
+}
+
+variable "rds_proxy_resource_id" {
+  type        = string
+  default     = ""
+  description = "RDS Proxy resource ID (prx-...) — scopes each DB-accessing service's rds-db:connect ARN. The services connect through the proxy, so the ARN must name the proxy, not the cluster. Empty skips the grant (no DB services)."
+}
+
+variable "neptune_cluster_resource_id" {
+  type        = string
+  default     = ""
+  description = "Neptune cluster resource ID (cluster-...) — scopes thor-api's read-only neptune-db grant. The neptune-db action namespace is keyed by this ID, not the cluster identifier or ARN. Empty skips the grant (Neptune disabled)."
+}
+
+variable "master_db_app_user" {
+  type        = string
+  default     = "thor_app"
+  description = "Master DB IAM role the services assume to read tenant routing"
+}
+
+variable "db_access_service_keys" {
+  type        = list(string)
+  default     = []
+  description = "Service keys whose task role gets rds-db:connect (Master DB as master_db_app_user + tenant DBs as tenant_*). Only those also present in active_services are granted."
+}
+
+variable "execution_secret_arns" {
+  type        = map(list(string))
+  default     = {}
+  description = "Bare Secrets Manager ARNs each service's `secrets` map pulls from, keyed by service name — grants GetSecretValue on the execution role that resolves them at task start. Bare, not \":<json-key>::\"-suffixed: the suffixed form a valueFrom accepts matches nothing as an IAM resource."
+}
+
+variable "uploads_bucket_arn" {
+  type        = string
+  description = "ARN of the tenant uploads bucket task-api presigns against. Required — the uploads module is always instantiated, so there is no no-bucket case to guard for."
+}
+
+variable "tenant_assets_bucket_name" {
+  type        = string
+  default     = ""
+  description = "Name of the tenant-assets bucket thor-api presigns logo uploads against and publishes logos to. A name rather than an ARN so it's known at plan time and can gate the grant. \"\" (no frontend) skips the grant."
+}
+
+variable "scan_gate_queue_arn" {
+  type        = string
+  default     = ""
+  description = "The scan-completion gate's queue, which task-api is allowed to send to. \"\" where the environment deploys no gate. A literal built from the naming rule at the root, not a module output, so its emptiness is known at plan and can drive for_each."
+}
+
+variable "tenant_vendors_allowlist_enabled" {
+  type        = bool
+  description = "Whether the DNS Firewall tenant-vendors domain list exists (NAT egress on). Gates thor-api's grant on it — a plain bool because the list's ARN isn't known until apply, and a for_each can't key off an unknown value."
+  default     = false
+}
+
+variable "tenant_vendors_domain_list_arn" {
+  type        = string
+  description = "ARN of the DNS Firewall tenant-vendors domain list thor-api keeps in sync with tenant log sink endpoints. Used only when tenant_vendors_allowlist_enabled."
+  default     = ""
+}
+
+variable "cross_account_pull_principal_arns" {
+  type        = list(string)
+  description = "IAM role ARNs (e.g. a downstream environment's deploy role, possibly in another AWS account) allowed to pull images from this environment's ECR repos. Empty by default — fill in once the downstream role actually exists (e.g. qa's terragrunt.hcl sets this to prod's deploy role ARN once the prod account/role are real)."
+  default     = []
+}
+
+variable "tags" {
+  type        = map(string)
+  description = "Additional resource-specific tags"
+  default     = {}
+}

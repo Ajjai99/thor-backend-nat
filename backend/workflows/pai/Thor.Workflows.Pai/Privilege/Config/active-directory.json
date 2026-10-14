@@ -1,0 +1,28 @@
+{
+  "connectorType": 308,
+  "definitions": [
+    {
+      "name": "Active Directory privileged groups",
+      "description": "Account is a direct or nested member of a group on the curated list of well-known AD privileged groups. Coverage is only as complete as this list. Matching is case-sensitive on the group's displayName.",
+      "severity": "critical",
+      "pathPattern": {
+        "edgeType": "MEMBER_OF",
+        "targetType": "grp",
+        "match": {
+          "field": "displayName",
+          "operator": "in",
+          "values": [
+            "Domain Admins",
+            "Enterprise Admins",
+            "Schema Admins",
+            "Administrators",
+            "Account Operators",
+            "Backup Operators",
+            "Server Operators",
+            "Print Operators"
+          ]
+        }
+      }
+    }
+  ]
+}

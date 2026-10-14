@@ -1,0 +1,32 @@
+<Solution>
+  <Folder Name="/platform/">
+    <Project Path="platform/Thor.Workflows.Abstractions/Thor.Workflows.Abstractions.csproj" />
+    <Project Path="platform/Thor.Workflows.Abstractions.Tests/Thor.Workflows.Abstractions.Tests.csproj" />
+    <Project Path="platform/Thor.Workflows.Hosting/Thor.Workflows.Hosting.csproj" />
+    <Project Path="platform/Thor.Workflows.Hosting.Tests/Thor.Workflows.Hosting.Tests.csproj" />
+  </Folder>
+  <Folder Name="/ingestion/">
+    <Project Path="ingestion/Thor.Workflows.Ingestion/Thor.Workflows.Ingestion.csproj" />
+    <Project Path="ingestion/Thor.Workflows.Ingestion.Tests/Thor.Workflows.Ingestion.Tests.csproj" />
+  </Folder>
+  <Folder Name="/atre/">
+    <Project Path="atre/Thor.Workflows.Atre/Thor.Workflows.Atre.csproj" />
+    <Project Path="atre/Thor.Workflows.Atre.Tests/Thor.Workflows.Atre.Tests.csproj" />
+  </Folder>
+  <Folder Name="/graph-load/">
+    <Project Path="graph-load/Thor.Workflows.GraphLoad/Thor.Workflows.GraphLoad.csproj" />
+    <Project Path="graph-load/Thor.Workflows.GraphLoad.Tests/Thor.Workflows.GraphLoad.Tests.csproj" />
+  </Folder>
+  <Folder Name="/ownership/">
+    <Project Path="ownership/Thor.Workflows.Ownership/Thor.Workflows.Ownership.csproj" />
+    <Project Path="ownership/Thor.Workflows.Ownership.Tests/Thor.Workflows.Ownership.Tests.csproj" />
+  </Folder>
+  <Folder Name="/pai/">
+    <Project Path="pai/Thor.Workflows.Pai/Thor.Workflows.Pai.csproj" />
+    <Project Path="pai/Thor.Workflows.Pai.Tests/Thor.Workflows.Pai.Tests.csproj" />
+  </Folder>
+  <Folder Name="/reconcile/">
+    <Project Path="reconcile/Thor.Workflows.Reconcile/Thor.Workflows.Reconcile.csproj" />
+    <Project Path="reconcile/Thor.Workflows.Reconcile.Tests/Thor.Workflows.Reconcile.Tests.csproj" />
+  </Folder>
+</Solution>

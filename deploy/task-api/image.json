@@ -1,0 +1,18 @@
+{
+  "service": "task-api",
+  "dev": {
+    "digest": "sphereco.jfrog.io/thor-docker-local/task-api@sha256:6d2f774a0ac2a11cd312d233a61ef7c1eeed68a4147c8dd16f5c207ba852c8d7",
+    "commitId": "98590054ced8d3f8cb5df106802dee111e986444",
+    "deployedAt": "2026-10-13T20:36:52Z"
+  },
+  "qa": {
+    "digest": "",
+    "commitId": "",
+    "deployedAt": ""
+  },
+  "prod": {
+    "digest": "",
+    "commitId": "",
+    "deployedAt": ""
+  }
+}

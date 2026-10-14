@@ -1,0 +1,8 @@
+{
+  "service": "workflow-graph-load",
+  "dev": {
+    "digest": "sphereco.jfrog.io/thor-docker-local/workflow-graph-load@sha256:55563bfba4c19c66ea0cb4297bfd94eadd754fc81604753b822e4ac7407827b6",
+    "commitId": "98590054ced8d3f8cb5df106802dee111e986444",
+    "deployedAt": "2026-10-13T20:36:18Z"
+  }
+}

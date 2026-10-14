@@ -1,0 +1,53 @@
+name: _deploy-preview
+
+# PR-preview check for qa and main: they promote an already-built image (see _deploy-core.yml's qa-deploy/prod
+# jobs), so this just confirms the code still compiles and unit tests pass — no Docker/AWS involved.
+
+on:
+  workflow_call:
+    inputs:
+      service:
+        required: true
+        type: string
+
+jobs:
+  preview:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        # inputs.service is the Terraform/ECS service key (thor-api/task-api/intelligence-engine); the actual
+        # source folders are PascalCase (Thor.API/Thor.TaskAPI/Thor.IntelligenceEngine), so map here.
+        working-directory: backend/services/${{ inputs.service == 'thor-api' && 'Thor.API' || inputs.service == 'task-api' && 'Thor.TaskAPI' || 'Thor.IntelligenceEngine' }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # See _deploy-core.yml: pin from global.json, never a literal version or the runner's default.
+      - uses: actions/setup-dotnet@v4
+        if: inputs.service != 'intelligence-engine'
+        with:
+          global-json-file: global.json
+
+      # Compile check only. Tests moved to test.yml, which runs every project in the repo and blocks —
+      # the step that used to be here discovered projects with `find -iname '*.test.csproj'` (which
+      # never matched `*.Tests.csproj`) and was continue-on-error, so it asserted nothing.
+      - name: Restore & build (.NET)
+        if: inputs.service != 'intelligence-engine'
+        run: |
+          dotnet restore
+          dotnet build --no-restore -c Release -p:OpenApiGenerateDocumentsOnBuild=false
+
+      - name: Install uv (Python)
+        if: inputs.service == 'intelligence-engine'
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+
+      - name: Install dependencies (Python)
+        if: inputs.service == 'intelligence-engine'
+        run: uv sync --frozen
+
+      # Codegen is the compile check for this service — it fails if proto/ and the Python side drift.
+      # pytest moved to test.yml.
+      - name: Generate gRPC stubs (Python)
+        if: inputs.service == 'intelligence-engine'
+        run: uv run python scripts/generate_grpc.py

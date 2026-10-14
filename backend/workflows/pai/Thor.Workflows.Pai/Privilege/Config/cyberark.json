@@ -1,0 +1,19 @@
+{
+  "connectorType": 401,
+  "definitions": [
+    {
+      "name": "CyberArk safe membership",
+      "description": "Account holds a permission grant on a CyberArk safe, whichever permissions were granted. A single hop: CyberArk's export does not list the members of groups that hold safe grants.",
+      "severity": "high",
+      "pathPattern": {
+        "edgeType": "HAS_ACCESS",
+        "targetType": "asset",
+        "match": {
+          "field": "assetType",
+          "operator": "equals",
+          "value": "cyberark_safe"
+        }
+      }
+    }
+  ]
+}

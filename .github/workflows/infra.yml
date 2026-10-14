@@ -1,0 +1,325 @@
+name: Infra
+
+# Reviews and applies Terraform/Terragrunt changes for dev, qa, prod.
+# PR: read-only checks. Push: same checks, then applies — auto for dev, approval-gated for qa/prod via GitHub
+# Environments shared with backend deploy. Both triggers fire on a merge; only the push side applies.
+# This is the only workflow that builds and deploys the zip Lambdas, so the path filter has to cover
+# everything that lands in one: infra/, backend/functions/, backend/shared/ (pulled in by
+# ProjectReference) and the publish script that assembles the payload. Omitting them means a
+# shared-only change never redeploys the functions that embed it.
+#
+# backend/workflows/ is still filtered on but no longer produces a zip — workflow modules are
+# container images, and their images deploy without Terraform (see modules/workflow's floating tag).
+# It stays because a workflow code change can still alter the Terraform-managed shape around it.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [dev, qa, main]
+    paths: ["infra/**", "backend/functions/**", "backend/workflows/**", "backend/shared/**", "scripts/publish-lambda-functions.sh", "scripts/validate-asl.sh", ".github/workflows/infra.yml"]
+  push:
+    branches: [dev, qa, main]
+    paths: ["infra/**", "backend/functions/**", "backend/workflows/**", "backend/shared/**", "scripts/publish-lambda-functions.sh", "scripts/validate-asl.sh", ".github/workflows/infra.yml"]
+
+# JFROG_HOSTNAME / JFROG_STATE_BACKEND_REPOSITORY: required by root.hcl's get_env() (fails loud if unset).
+# TF_TOKEN_...: Terraform's login for that backend. JFROG_ACCESS_TOKEN / JFROG_USERNAME (from secrets.jf_api_thor
+# / vars.jf_usr_thor) and JFROG_LAMBDA_ARTIFACTS_REPOSITORY: used by publish-lambda-functions.sh's build cache.
+env:
+  TF_TOKEN_sphereco_jfrog_io: ${{ secrets.jf_api_thor }}
+  JFROG_HOSTNAME: ${{ vars.JFROG_HOSTNAME }}
+  JFROG_STATE_BACKEND_REPOSITORY: ${{ vars.JFROG_STATE_BACKEND_REPOSITORY}}
+  JFROG_ACCESS_TOKEN: ${{ secrets.jf_api_thor }}
+  JFROG_USERNAME: ${{ vars.jf_usr_thor }}
+  JFROG_LAMBDA_ARTIFACTS_REPOSITORY: ${{ vars.JFROG_LAMBDA_ARTIFACTS_REPOSITORY }}
+  TG_NON_INTERACTIVE: "true"
+  DEV_AWS_REGION: ${{ vars.DEV_AWS_REGION }}
+  QA_AWS_REGION: ${{ vars.QA_AWS_REGION }}
+  PROD_AWS_REGION: ${{ vars.PROD_AWS_REGION }}
+
+# One run per branch at a time; never cancels mid-run to avoid a half-applied state.
+# The group is shared with deploy.yml (which uses the same aws-<branch> string), because both
+# workflows fire on a backend/shared/** change and both mutate ECS in the same account —
+# terragrunt apply registers task-definition revisions while ecs-deploy is rolling services.
+concurrency:
+  group: aws-${{ github.event_name == 'push' && github.ref_name || github.base_ref }}
+  cancel-in-progress: false
+
+permissions:
+  id-token: write
+  contents: read
+  pull-requests: write
+
+jobs:
+  context:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      environment: ${{ steps.set.outputs.environment }}
+    steps:
+      - id: set
+        run: |
+          # Get the target branch: pushed branch on push, PR's base branch on pull_request.
+          if [ "${{ github.event_name }}" = "push" ]; then
+            BRANCH="${{ github.ref_name }}"
+          else
+            BRANCH="${{ github.base_ref }}"
+          fi
+
+          # Map branch to environment name.
+          if [ "$BRANCH" = "qa" ]; then
+            ENVIRONMENT="qa"
+          elif [ "$BRANCH" = "main" ]; then
+            ENVIRONMENT="prod"
+          elif [ "$BRANCH" = "dev" ]; then
+            ENVIRONMENT="dev"
+          else
+            echo "::error::Unrecognized branch '$BRANCH' - expected dev, qa, or main." >&2
+            exit 1
+          fi
+
+          echo "environment=${ENVIRONMENT}" >> "$GITHUB_OUTPUT"
+
+  validate-terragrunt:
+    needs: context
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: infra/envs/${{ needs.context.outputs.environment }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/terragrunt-setup
+        with:
+          role_arn: ${{ needs.context.outputs.environment == 'dev' && vars.DEV_AWS_ROLE_ARN || needs.context.outputs.environment == 'qa' && vars.QA_AWS_ROLE_ARN || needs.context.outputs.environment == 'prod' && vars.PROD_AWS_ROLE_ARN }}
+          region: ${{ needs.context.outputs.environment == 'dev' && vars.DEV_AWS_REGION || needs.context.outputs.environment == 'qa' && vars.QA_AWS_REGION || needs.context.outputs.environment == 'prod' && vars.PROD_AWS_REGION }}
+          working_directory: infra/envs/${{ needs.context.outputs.environment }}
+
+      - name: terragrunt validate
+        run: terragrunt validate -no-color
+
+      # Recursive by default — covers root.hcl and every env's terragrunt.hcl, not just this one.
+      - name: terragrunt hcl fmt --check
+        working-directory: infra
+        run: terragrunt hcl fmt --check
+
+      # infra/src/.tflint.hcl enables the AWS ruleset plugin this needs.
+      - uses: terraform-linters/setup-tflint@v4
+        with:
+          tflint_version: v0.64.0
+
+      # use GITHUB_TOKEN for authenticated requests
+      - name: tflint
+        working-directory: infra/src
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tflint --init
+          tflint --recursive
+
+      # The workflow state machines are authored as ASL, not generated from HCL, so AWS's own
+      # validator can check them before anything is applied. This is what catches DUPLICATE_STATE_NAME,
+      # unreachable states and unresolved transitions — the class of error that previously only
+      # surfaced when Step Functions rejected the apply.
+      #
+      # ValidateStateMachineDefinition creates nothing; terragrunt-setup above already assumed the role.
+      - name: Validate workflow state machine definitions
+        working-directory: .
+        run: ./scripts/validate-asl.sh
+
+  plan-terragrunt:
+    needs: [context, validate-terragrunt]
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: infra/envs/${{ needs.context.outputs.environment }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # root.hcl's before_hook runs dotnet publish before plan/apply — needs the SDK first. Not needed by init/validate.
+      # global-json-file, not a literal: global.json pins 10.0.300 with rollForward: latestFeature, which
+      # rolls forward within the 10.0.3xx band and never backward — so the previous hardcoded 10.0.100
+      # installed an SDK that `dotnet` would refuse to use.
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      - uses: ./.github/actions/terragrunt-setup
+        with:
+          role_arn: ${{ needs.context.outputs.environment == 'dev' && vars.DEV_AWS_ROLE_ARN || needs.context.outputs.environment == 'qa' && vars.QA_AWS_ROLE_ARN || needs.context.outputs.environment == 'prod' && vars.PROD_AWS_ROLE_ARN }}
+          region: ${{ needs.context.outputs.environment == 'dev' && vars.DEV_AWS_REGION || needs.context.outputs.environment == 'qa' && vars.QA_AWS_REGION || needs.context.outputs.environment == 'prod' && vars.PROD_AWS_REGION }}
+          working_directory: infra/envs/${{ needs.context.outputs.environment }}
+
+      # Absolute /tmp path — terragrunt runs terraform from a hashed cache dir, not this working-directory.
+      - name: terragrunt plan
+        id: plan
+        shell: bash
+        run: terragrunt plan -no-color -out=/tmp/tfplan.binary 2>&1 | tee /tmp/plan-output.txt
+        continue-on-error: true
+
+      # Only uploaded on success — this is how the plan file crosses to apply-terragrunt's separate runner.
+      - name: Upload plan file
+        if: steps.plan.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: tfplan-${{ needs.context.outputs.environment }}
+          path: /tmp/tfplan.binary
+          # Must outlive the gap between plan and apply — on qa/prod that gap is however long the
+          # Environment approval sits unreviewed, and re-running just the apply job after the artifacts
+          # expire leaves it applying a plan whose zips are gone.
+          retention-days: 7
+
+      # apply doesn't rebuild these, so they must cross to apply-terragrunt — tarred as one file for a
+      # reliable transfer. Both halves are needed: aws_lambda_function reads the zip, and each module's
+      # data.archive_file is re-read during apply, which stats its source_dir (the publish/ dir) before
+      # anything else — restoring the zip alone fails with "could not archive missing directory".
+      # tar preserves mtimes, so the re-read recomputes the same output_base64sha256 the plan recorded.
+      # Every environment instantiates lambda/db_bootstrap/master_db_seed unconditionally, so a successful
+      # plan always leaves both behind; either one missing means the plan never wrote them, and letting that
+      # slide only moves the failure to apply, where terraform reports it far less legibly.
+      - name: Tar lambda function build zips and publish dirs
+        if: steps.plan.outcome == 'success'
+        working-directory: ${{ github.workspace }}
+        run: |
+          shopt -s nullglob
+          zips=(backend/functions/*/*.zip)
+          pubs=(backend/functions/*/publish)
+          if [ "${#zips[@]}" -eq 0 ]; then
+            echo "::error::terragrunt plan produced no lambda build zips — apply would fail reading them." >&2
+            exit 1
+          fi
+          if [ "${#pubs[@]}" -eq 0 ]; then
+            echo "::error::no lambda publish/ dirs found — apply's archive_file re-read would fail on the missing source_dir." >&2
+            exit 1
+          fi
+          printf 'tarring %s\n' "${zips[@]}" "${pubs[@]}"
+          tar -czf /tmp/lambda-zips.tar.gz "${zips[@]}" "${pubs[@]}"
+
+      - name: Upload lambda function build zips
+        if: steps.plan.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: lambda-zips-${{ needs.context.outputs.environment }}
+          path: /tmp/lambda-zips.tar.gz
+          retention-days: 7
+          if-no-files-found: error
+
+      # Skipped on push runs — no PR to comment on.
+      - name: Post plan to PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const output = fs.readFileSync('/tmp/plan-output.txt', 'utf8').slice(-60000);
+            const marker = `<!-- infra-plan:${{ needs.context.outputs.environment }} -->`;
+            const body = `${marker}\n### Terragrunt plan — \`${{ needs.context.outputs.environment }}\` (${{ steps.plan.outcome }})\n<details><summary>Show plan</summary>\n\n\`\`\`\n${output}\n\`\`\`\n</details>`;
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner, repo: context.repo.repo, issue_number: ${{ github.event.pull_request.number }}
+            });
+            const existing = comments.find(c => c.body.startsWith(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({ owner: context.repo.owner, repo: context.repo.repo, comment_id: existing.id, body });
+            } else {
+              await github.rest.issues.createComment({ owner: context.repo.owner, repo: context.repo.repo, issue_number: ${{ github.event.pull_request.number }}, body });
+            }
+
+      - name: Fail the job if plan itself failed
+        if: steps.plan.outcome == 'failure'
+        run: exit 1
+
+  apply-terragrunt:
+    needs: [context, plan-terragrunt]
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    # Shared dev/qa/prod Environments with backend deploy — only qa/prod require review.
+    environment: ${{ needs.context.outputs.environment }}
+    # Counted from when the approval is granted, not from when the job starts waiting.
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: infra/envs/${{ needs.context.outputs.environment }}
+    env:
+      # Skips root.hcl's before_hook rebuild — this job applies a saved plan and already restores the exact zip plan-terragrunt built, so no SDK/rebuild needed here at all.
+      SKIP_LAMBDA_PUBLISH: "true"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/terragrunt-setup
+        with:
+          role_arn: ${{ needs.context.outputs.environment == 'dev' && vars.DEV_AWS_ROLE_ARN || needs.context.outputs.environment == 'qa' && vars.QA_AWS_ROLE_ARN || needs.context.outputs.environment == 'prod' && vars.PROD_AWS_ROLE_ARN }}
+          region: ${{ needs.context.outputs.environment == 'dev' && vars.DEV_AWS_REGION || needs.context.outputs.environment == 'qa' && vars.QA_AWS_REGION || needs.context.outputs.environment == 'prod' && vars.PROD_AWS_REGION }}
+          working_directory: infra/envs/${{ needs.context.outputs.environment }}
+
+      # /tmp, matching where plan-terragrunt wrote it.
+      - name: Download plan file
+        uses: actions/download-artifact@v4
+        with:
+          name: tfplan-${{ needs.context.outputs.environment }}
+          path: /tmp
+
+      # Not continue-on-error: this job never rebuilds (SKIP_LAMBDA_PUBLISH), so a missing artifact — expired
+      # retention, or an apply job re-run long after its plan — means the zips the saved plan points at will
+      # not exist on disk. Failing here names the real cause instead of surfacing it as a terraform file error.
+      - name: Download lambda function build zips
+        uses: actions/download-artifact@v4
+        with:
+          name: lambda-zips-${{ needs.context.outputs.environment }}
+          path: /tmp
+
+      # Restores the same layout the tar step recorded, at the same absolute paths root.hcl's
+      # get_repo_root() hands the modules as var.*_source_dir.
+      - name: Untar lambda function build zips
+        working-directory: ${{ github.workspace }}
+        run: |
+          tar -xzvf /tmp/lambda-zips.tar.gz
+
+      # Applies the exact plan reviewed — fails as stale if state changed since, instead of applying something different.
+      - name: terragrunt apply
+        run: terragrunt apply -no-color /tmp/tfplan.binary
+
+  seed-ecr-placeholder:
+    needs: [context, apply-terragrunt]
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # Same environment apply-terragrunt used — no second reviewer prompt.
+    environment: ${{ needs.context.outputs.environment }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/ecr-login
+        id: ecr
+        with:
+          role_arn: ${{ needs.context.outputs.environment == 'dev' && vars.DEV_AWS_ROLE_ARN || needs.context.outputs.environment == 'qa' && vars.QA_AWS_ROLE_ARN || needs.context.outputs.environment == 'prod' && vars.PROD_AWS_ROLE_ARN }}
+          region: ${{ needs.context.outputs.environment == 'dev' && vars.DEV_AWS_REGION || needs.context.outputs.environment == 'qa' && vars.QA_AWS_REGION || needs.context.outputs.environment == 'prod' && vars.PROD_AWS_REGION }}
+
+      # linux/amd64: Fargate task defs default to X86_64. Only pushes to repos with zero images — never overwrites a real :latest.
+      - name: Seed any empty ECR repo with the placeholder image
+        env:
+          ENVIRONMENT: ${{ needs.context.outputs.environment }}
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+        run: |
+          set -euo pipefail
+          docker build --platform linux/amd64 -t placeholder placeholder-image/
+
+          for svc in thor-api task-api intelligence-engine; do
+            REPO="${svc}-${ENVIRONMENT}"
+
+            if ! aws ecr describe-repositories --repository-names "$REPO" --region "$AWS_REGION" >/dev/null 2>&1; then
+              echo "$REPO doesn't exist yet (enable_compute off, or repo not created) — skipping."
+              continue
+            fi
+
+            IMAGE_COUNT=$(aws ecr describe-images --repository-name "$REPO" --region "$AWS_REGION" --query 'length(imageDetails)' --output text 2>/dev/null || echo 0)
+            if [ "$IMAGE_COUNT" != "0" ]; then
+              echo "$REPO already has $IMAGE_COUNT image(s) — leaving it alone."
+              continue
+            fi
+
+            echo "$REPO is empty — pushing placeholder."
+            IMAGE="${REGISTRY}/${REPO}:latest"
+            docker tag placeholder "$IMAGE"
+            docker push "$IMAGE"
+          done

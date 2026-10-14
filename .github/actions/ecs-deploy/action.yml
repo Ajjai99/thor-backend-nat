@@ -1,0 +1,131 @@
+name: ECS deploy
+description: Registers a new task-definition revision with the given image and waits until it is primary and healthy.
+
+# Deploys exactly the one service it is given.
+#
+# This used to also redeploy the two sibling services on their current image, coordinated across
+# concurrent jobs by a `changed_services` CSV and a fixed-order PRIMARY election. That existed for one
+# reason (backend/services/Thor.API/README.md): scripts/seed-connector-secrets.sh rotates the connector
+# JWT keypair and the API-key pepper out of band, and a running task keeps the old value until it is
+# replaced — so thor-api, task-api and the authorizer could end up on different keypairs and connector
+# tokens would stop verifying somewhere.
+#
+# Coupling that to every ordinary deploy was the wrong trade. It tripled the blast radius of every
+# deploy to fix a problem that only exists just after a manual rotation, and the sync read the
+# sibling's image from `describe-task-definition` — the family's latest ACTIVE revision, not what the
+# service is actually running. A terragrunt apply registers a revision with `<repo>:latest`, so a
+# routine deploy of one service could roll an untouched sibling onto the placeholder image.
+#
+# Rotation now has its own explicit workflow: .github/workflows/roll-services.yml, which uses
+# `update-service --force-new-deployment`. That restarts tasks on the *same* task definition, and
+# because the secrets arrive as `valueFrom` ARNs (infra/src/main.tf's service_app_secrets) ECS
+# re-resolves them at task start. It reads no image at all, so it cannot roll anything onto `:latest`.
+
+inputs:
+  environment:
+    required: true
+  service:
+    required: true
+  image_uri:
+    required: true
+  timeout_minutes:
+    required: false
+    default: "30"
+
+outputs:
+  task_definition_arn:
+    value: ${{ steps.deploy.outputs.arn }}
+
+runs:
+  using: composite
+  steps:
+    - id: deploy
+      shell: bash
+      env:
+        ENVIRONMENT: ${{ inputs.environment }}
+        SERVICE: ${{ inputs.service }}
+        IMAGE_URI: ${{ inputs.image_uri }}
+        TIMEOUT_MINUTES: ${{ inputs.timeout_minutes }}
+      run: |
+        set -euo pipefail
+
+        # Only patches the image and registers a new revision — Terraform owns everything else about the task def's shape.
+        FAMILY="thor-${ENVIRONMENT}-${SERVICE}"
+        CURRENT_TASK_DEF=$(aws ecs describe-task-definition --task-definition "$FAMILY" --query 'taskDefinition' --output json)
+        NEW_TASK_DEF=$(echo "$CURRENT_TASK_DEF" | jq --arg IMAGE "$IMAGE_URI" \
+          '.containerDefinitions[0].image = $IMAGE | del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .compatibilities, .registeredAt, .registeredBy)')
+        NEW_ARN=$(aws ecs register-task-definition --cli-input-json "$NEW_TASK_DEF" --query 'taskDefinition.taskDefinitionArn' --output text)
+
+        # BLUE_GREEN requires the full load-balancer config re-passed on every update — re-read what's current and pass it straight back.
+        LOAD_BALANCERS=$(aws ecs describe-services \
+          --cluster "thor-${ENVIRONMENT}" \
+          --services "$SERVICE" \
+          --query 'services[0].loadBalancers' --output json)
+
+        if [ "$(echo "$LOAD_BALANCERS" | jq 'length')" -gt 0 ]; then
+          aws ecs update-service \
+            --cluster "thor-${ENVIRONMENT}" \
+            --service "$SERVICE" \
+            --task-definition "$NEW_ARN" \
+            --load-balancers "$LOAD_BALANCERS" \
+            >/dev/null
+        else
+          aws ecs update-service \
+            --cluster "thor-${ENVIRONMENT}" \
+            --service "$SERVICE" \
+            --task-definition "$NEW_ARN" \
+            >/dev/null
+        fi
+
+        # Polled manually — aws ecs wait services-stable's fixed ~10min timeout can't cover a full BLUE_GREEN bake.
+        # Succeeds once our new revision is primary and healthy; doesn't wait for old-revision bake/teardown.
+        TIMEOUT_SECONDS=$(( TIMEOUT_MINUTES * 60 ))
+        INTERVAL=15
+        ELAPSED=0
+
+        while true; do
+          DEPLOYMENTS=$(aws ecs describe-services \
+            --cluster "thor-${ENVIRONMENT}" \
+            --services "$SERVICE" \
+            --query 'services[0].deployments' --output json)
+
+          NEW_DEPLOYMENT=$(echo "$DEPLOYMENTS" | jq --arg ARN "$NEW_ARN" '[.[] | select(.taskDefinition == $ARN)][0]')
+
+          if [ "$NEW_DEPLOYMENT" != "null" ]; then
+            STATUS=$(echo "$NEW_DEPLOYMENT" | jq -r '.status')
+            RUNNING=$(echo "$NEW_DEPLOYMENT" | jq -r '.runningCount')
+            DESIRED=$(echo "$NEW_DEPLOYMENT" | jq -r '.desiredCount')
+
+            if [ "$STATUS" = "PRIMARY" ] && [ "$RUNNING" = "$DESIRED" ]; then
+              echo "[$SERVICE] New revision is primary and healthy — not waiting for bake/old-revision teardown." >&2
+              echo "arn=$NEW_ARN" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          fi
+
+          COUNT=$(echo "$DEPLOYMENTS" | jq 'length')
+
+          if [ "$COUNT" -eq 1 ]; then
+            SOLE_STATUS=$(echo "$DEPLOYMENTS" | jq -r '.[0].status')
+            SOLE_TASK_DEF=$(echo "$DEPLOYMENTS" | jq -r '.[0].taskDefinition')
+
+            if [ "$SOLE_STATUS" = "PRIMARY" ] && [ "$SOLE_TASK_DEF" != "$NEW_ARN" ]; then
+              echo "::error::[$SERVICE] Deployment was rolled back: the sole remaining deployment is not the task definition just registered." >&2
+              exit 1
+            fi
+          fi
+
+          FAILED_COUNT=$(echo "$DEPLOYMENTS" | jq -r '[.[] | select(.rolloutState == "FAILED")] | length')
+          if [ "$FAILED_COUNT" -gt 0 ]; then
+            echo "::error::[$SERVICE] ECS reported a FAILED rollout state." >&2
+            exit 1
+          fi
+
+          if [ "$ELAPSED" -ge "$TIMEOUT_SECONDS" ]; then
+            echo "::error::[$SERVICE] Timed out after ${TIMEOUT_SECONDS}s waiting to stabilize." >&2
+            exit 1
+          fi
+
+          sleep "$INTERVAL"
+          ELAPSED=$((ELAPSED + INTERVAL))
+        done

@@ -1,0 +1,195 @@
+-- One-time cluster bootstrap: the least-privilege DB roles the platform assumes at runtime.
+--
+-- Chicken-and-egg: creating login roles and granting rds_iam needs an admin identity once. This
+-- script is run by the Thor.DbBootstrap Lambda as the Aurora master user (AWS-managed secret,
+-- read in-VPC via Secrets Manager) over a direct connection to the writer. It is idempotent, so
+-- Terraform re-invokes it safely whenever the role set changes.
+--
+-- Auth is RDS IAM (no password) for EVERY role — including thor_authorizer, which now connects
+-- in-VPC through the RDS Proxy with an IAM token (the RDS Data API is disabled). There is no
+-- password anywhere in the platform.
+--
+-- Least privilege by role — each identity gets only what its job needs:
+--   thor_provisioner      DDL only: create tenant databases + their roles
+--   thor_metadata_writer  write tenant + tenant_routing rows (no DDL power)
+--   thor_app              runtime read of tenant routing + connector API-key/refresh-token writes
+--   thor_authorizer       authorizer's read-only routing lookup + connector refresh-token check
+--   thor_master_seed      write access to the specific master/auth tables seeded today
+--
+-- The Lambda applies the Master migrations before running this script, so the tables normally
+-- exist by now; the table/schema grants are still guarded so role creation succeeds even if a
+-- migration is ever missing (the grants then land on the next invocation). Per-tenant
+-- tenant_<id>_rw/_ro roles are created later by the provisioning workflow, not here.
+
+-- ── thor_provisioner ── DDL identity (create-tenant-database step only).
+--   CREATEDB + CREATEROLE      -> create each tenant database and its _rw/_ro roles
+--   rds_iam WITH ADMIN OPTION  -> authenticate via IAM token, and re-grant rds_iam to tenants
+--   No auth/master grants: it never reads or writes the metadata tables.
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'thor_provisioner') THEN
+    CREATE ROLE thor_provisioner WITH LOGIN CREATEDB CREATEROLE;
+  ELSE
+    ALTER ROLE thor_provisioner WITH LOGIN CREATEDB CREATEROLE;
+  END IF;
+END
+$$;
+
+GRANT rds_iam TO thor_provisioner WITH ADMIN OPTION;
+
+-- ── thor_metadata_writer ── writes tenant metadata (seed + finalize-routing steps).
+--   rds_iam + write access to the two auth tables only. No CREATEDB/CREATEROLE.
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'thor_metadata_writer') THEN
+    CREATE ROLE thor_metadata_writer WITH LOGIN;
+  ELSE
+    ALTER ROLE thor_metadata_writer WITH LOGIN;
+  END IF;
+END
+$$;
+
+GRANT rds_iam TO thor_metadata_writer;
+
+DO $$
+BEGIN
+  IF to_regclass('auth.tenant') IS NOT NULL AND to_regclass('auth.tenant_routing') IS NOT NULL THEN
+    GRANT USAGE ON SCHEMA auth TO thor_metadata_writer;
+    GRANT SELECT, INSERT, UPDATE ON auth.tenant, auth.tenant_routing TO thor_metadata_writer;
+  END IF;
+  -- Read-only on master for FK/lookup checks when inserting a tenant (tier/isolation/status).
+  IF EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = 'master') THEN
+    GRANT USAGE ON SCHEMA master TO thor_metadata_writer;
+    GRANT SELECT ON ALL TABLES IN SCHEMA master TO thor_metadata_writer;
+  END IF;
+END
+$$;
+
+-- ── thor_app ── runtime identity (services resolve tenant routing). IAM. Read-only except the
+--   connector API-key / refresh-token tables in auth, which the Thor.Api auth endpoints write.
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'thor_app') THEN
+    CREATE ROLE thor_app WITH LOGIN;
+  ELSE
+    ALTER ROLE thor_app WITH LOGIN;
+  END IF;
+END
+$$;
+
+GRANT rds_iam TO thor_app;
+
+DO $$
+BEGIN
+  IF to_regclass('auth.tenant') IS NOT NULL AND to_regclass('auth.tenant_routing') IS NOT NULL THEN
+    GRANT USAGE ON SCHEMA auth TO thor_app;
+    GRANT SELECT ON auth.tenant, auth.tenant_routing TO thor_app;
+  END IF;
+  IF EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = 'master') THEN
+    GRANT USAGE ON SCHEMA master TO thor_app;
+    GRANT SELECT ON ALL TABLES IN SCHEMA master TO thor_app;
+  END IF;
+  -- Each table below is guarded on its own so one missing table (e.g. a stale schema when
+  -- migrations are skipped) can't silently drop the others' grants.
+  -- Per-tenant log sink lookup (TenantLogSinkResolver, Thor.Api + Thor.TaskApi).
+  IF to_regclass('auth.tenant_log_sink_config') IS NOT NULL THEN
+    GRANT SELECT ON auth.tenant_log_sink_config TO thor_app;
+  END IF;
+  -- Connector API-key issuance (ConnectorApiKeyService) + Task API token exchange
+  -- (ConnectorAuthService). No DELETE; UPDATE is column-scoped to the one column each flow
+  -- changes. key_scope_map.id is an identity column, so no sequence grant is needed.
+  IF to_regclass('auth.api_scopes') IS NOT NULL THEN
+    GRANT SELECT ON auth.api_scopes TO thor_app;
+  END IF;
+  IF to_regclass('auth.tenant_api_key') IS NOT NULL THEN
+    GRANT SELECT, INSERT, UPDATE (last_used_at) ON auth.tenant_api_key TO thor_app;
+  END IF;
+  IF to_regclass('auth.key_scope_map') IS NOT NULL THEN
+    GRANT SELECT, INSERT ON auth.key_scope_map TO thor_app;
+  END IF;
+  IF to_regclass('auth.task_api_refresh_token') IS NOT NULL THEN
+    GRANT SELECT, INSERT, UPDATE (revoked_at) ON auth.task_api_refresh_token TO thor_app;
+  END IF;
+  -- Tenant login-page logo (TenantBrandingService sets/replaces/removes; LoginConfigService reads).
+  IF to_regclass('auth.tenant_branding') IS NOT NULL THEN
+    GRANT SELECT, INSERT, UPDATE (logo_object_key, updated_at), DELETE ON auth.tenant_branding TO thor_app;
+  END IF;
+  -- Thor's record of each tenant IdP (IdentityProviderService). The tenant, name and creator
+  -- are fixed once written, so UPDATE is limited to the columns an edit/enable/disable changes.
+  IF to_regclass('auth.tenant_identity_provider') IS NOT NULL THEN
+    GRANT SELECT, INSERT, UPDATE (vendor, saml_metadata_source, enabled, updated_by_sub, updated_at), DELETE
+      ON auth.tenant_identity_provider TO thor_app;
+  END IF;
+END
+$$;
+
+-- ── thor_authorizer ── the authorizer's routing lookup and refresh-token check (in-VPC, IAM via
+--   the proxy). rds_iam (no password), read-only, and only the tables/columns those reads touch.
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'thor_authorizer') THEN
+    CREATE ROLE thor_authorizer WITH LOGIN;
+  ELSE
+    ALTER ROLE thor_authorizer WITH LOGIN;
+  END IF;
+END
+$$;
+
+GRANT rds_iam TO thor_authorizer;
+
+DO $$
+BEGIN
+  IF to_regclass('auth.tenant') IS NOT NULL AND to_regclass('auth.tenant_routing') IS NOT NULL THEN
+    GRANT USAGE ON SCHEMA auth TO thor_authorizer;
+    GRANT SELECT ON auth.tenant, auth.tenant_routing TO thor_authorizer;
+  END IF;
+END
+$$;
+
+-- Refresh-token -> tenant lookup on POST /v{version}/register/refresh
+-- (MasterDbRefreshTokenRepository): only the columns needed to find the token's tenant and whether
+-- it was already used — never a token or key hash/salt.
+DO $$
+BEGIN
+  IF to_regclass('auth.task_api_refresh_token') IS NOT NULL AND to_regclass('auth.tenant_api_key') IS NOT NULL THEN
+    GRANT USAGE ON SCHEMA auth TO thor_authorizer;
+    GRANT SELECT (token_id, key_id, role_type, revoked_at) ON auth.task_api_refresh_token TO thor_authorizer;
+    GRANT SELECT (key_id, tenant_id) ON auth.tenant_api_key TO thor_authorizer;
+  END IF;
+END
+$$;
+
+-- ── thor_master_seed ── writes deployment seed data (Thor.MasterDbSeed Lambda).
+--   rds_iam, write access scoped to the specific master/auth tables seeded today. No CREATEDB/CREATEROLE.
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'thor_master_seed') THEN
+    CREATE ROLE thor_master_seed WITH LOGIN;
+  ELSE
+    ALTER ROLE thor_master_seed WITH LOGIN;
+  END IF;
+END
+$$;
+
+GRANT rds_iam TO thor_master_seed;
+
+DO $$
+BEGIN
+  IF to_regclass('master.authentication_types') IS NOT NULL
+     AND to_regclass('master.connector_config_fields') IS NOT NULL
+     AND to_regclass('master.authentication_fields') IS NOT NULL
+     AND to_regclass('master.connector_types') IS NOT NULL
+     AND to_regclass('master.authentication_type_connector_types') IS NOT NULL THEN
+    GRANT USAGE ON SCHEMA master TO thor_master_seed;
+    GRANT SELECT, INSERT, UPDATE ON
+      master.authentication_types, master.connector_config_fields, master.authentication_fields,
+      master.connector_types, master.authentication_type_connector_types
+      TO thor_master_seed;
+  END IF;
+
+  IF to_regclass('auth.api_scopes') IS NOT NULL THEN
+    GRANT USAGE ON SCHEMA auth TO thor_master_seed;
+    GRANT SELECT, INSERT, UPDATE ON auth.api_scopes TO thor_master_seed;
+  END IF;
+END
+$$;

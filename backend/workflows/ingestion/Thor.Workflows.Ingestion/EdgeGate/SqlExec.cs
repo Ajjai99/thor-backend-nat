@@ -1,0 +1,125 @@
+using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
+using Npgsql;
+using Thor.DataLayer.Data;
+
+namespace Thor.Workflows.Ingestion.EdgeGate;
+
+/// <summary>
+/// Thin raw-SQL execution helpers shared by <see cref="EdgeResolver"/>/<see cref="OneSidedRefIndex"/>/
+/// <see cref="EdgeRefDeltaComputer"/> — all run hand-written SQL directly against the ambient EF
+/// connection/transaction rather than through LINQ (no translation exists for the CTE/upsert/
+/// temp-table shapes they need). Each call is one statement: Postgres's extended query protocol
+/// (used whenever parameters are bound) rejects multiple `;`-separated statements in a single
+/// command, so multi-step operations issue one command per step rather than one semicolon-joined
+/// command text.
+///
+/// <see cref="ExecAsync"/>/<see cref="ScalarLongAsync"/> explicitly open/close the connection
+/// around each call via <c>Database.OpenConnectionAsync</c> — EF Core ref-counts this (it only
+/// actually opens/closes on the outermost call), so it's a no-op when a caller (e.g.
+/// <see cref="EdgeResolver"/>, inside its own <c>BeginTransactionAsync</c>) already holds the
+/// connection open, and the one thing that makes a standalone caller (e.g.
+/// <see cref="EdgeRefDeltaComputer"/>, which isn't wrapped in a transaction) actually work —
+/// a raw <see cref="NpgsqlCommand"/> against <c>GetDbConnection()</c> does not auto-open it.
+/// </summary>
+internal static class SqlExec
+{
+    private const int CommandTimeoutSeconds = 300;
+
+    public static (NpgsqlConnection Connection, NpgsqlTransaction? Transaction) Conn(TenantDbContext db) =>
+        ((NpgsqlConnection)db.Database.GetDbConnection(), (NpgsqlTransaction?)db.Database.CurrentTransaction?.GetDbTransaction());
+
+    public static async Task ExecAsync(TenantDbContext db, string sql, CancellationToken cancellationToken, params NpgsqlParameter[] parameters)
+    {
+        await db.Database.OpenConnectionAsync(cancellationToken);
+        try
+        {
+            var (connection, transaction) = Conn(db);
+            await using var command = new NpgsqlCommand(sql, connection, transaction) { CommandTimeout = CommandTimeoutSeconds };
+            command.Parameters.AddRange(parameters);
+            await command.ExecuteNonQueryAsync(cancellationToken);
+        }
+        finally
+        {
+            await db.Database.CloseConnectionAsync();
+        }
+    }
+
+    /// <summary>Runs one statement and returns the rows it affected.</summary>
+    public static async Task<int> ExecCountAsync(TenantDbContext db, string sql, CancellationToken cancellationToken, params NpgsqlParameter[] parameters)
+    {
+        await db.Database.OpenConnectionAsync(cancellationToken);
+        try
+        {
+            var (connection, transaction) = Conn(db);
+            await using var command = new NpgsqlCommand(sql, connection, transaction) { CommandTimeout = CommandTimeoutSeconds };
+            command.Parameters.AddRange(parameters);
+            return await command.ExecuteNonQueryAsync(cancellationToken);
+        }
+        finally
+        {
+            await db.Database.CloseConnectionAsync();
+        }
+    }
+
+    /// <summary>Runs one query and maps every returned row.</summary>
+    public static async Task<List<T>> QueryAsync<T>(TenantDbContext db, string sql, Func<NpgsqlDataReader, T> map, CancellationToken cancellationToken, params NpgsqlParameter[] parameters)
+    {
+        await db.Database.OpenConnectionAsync(cancellationToken);
+        try
+        {
+            var (connection, transaction) = Conn(db);
+            await using var command = new NpgsqlCommand(sql, connection, transaction) { CommandTimeout = CommandTimeoutSeconds };
+            command.Parameters.AddRange(parameters);
+            await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+            var rows = new List<T>();
+            while (await reader.ReadAsync(cancellationToken))
+            {
+                rows.Add(map(reader));
+            }
+
+            return rows;
+        }
+        finally
+        {
+            await db.Database.CloseConnectionAsync();
+        }
+    }
+
+    /// <summary>
+    /// Deletes the rows matching <paramref name="whereClause"/> a batch at a time, each batch its own
+    /// statement, so no single delete grows with the number of rows. Returns the rows deleted.
+    /// </summary>
+    public static async Task<long> DeleteInBatchesAsync(TenantDbContext db, string table, string whereClause, int batchRows, CancellationToken cancellationToken, params NpgsqlParameter[] parameters)
+    {
+        var sql = $"DELETE FROM {table} WHERE ctid IN (SELECT ctid FROM {table} WHERE {whereClause} LIMIT {batchRows})";
+        long total = 0;
+        int deleted;
+        do
+        {
+            deleted = await ExecCountAsync(db, sql, cancellationToken, parameters.Select(Clone).ToArray());
+            total += deleted;
+        }
+        while (deleted > 0);
+
+        return total;
+    }
+
+    private static NpgsqlParameter Clone(NpgsqlParameter parameter) => new(parameter.ParameterName, parameter.Value);
+
+    public static async Task<long> ScalarLongAsync(TenantDbContext db, string sql, CancellationToken cancellationToken, params NpgsqlParameter[] parameters)
+    {
+        await db.Database.OpenConnectionAsync(cancellationToken);
+        try
+        {
+            var (connection, transaction) = Conn(db);
+            await using var command = new NpgsqlCommand(sql, connection, transaction) { CommandTimeout = CommandTimeoutSeconds };
+            command.Parameters.AddRange(parameters);
+            return (long)(await command.ExecuteScalarAsync(cancellationToken) ?? 0L);
+        }
+        finally
+        {
+            await db.Database.CloseConnectionAsync();
+        }
+    }
+}

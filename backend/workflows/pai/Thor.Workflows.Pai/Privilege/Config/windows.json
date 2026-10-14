@@ -1,0 +1,19 @@
+{
+  "connectorType": 402,
+  "definitions": [
+    {
+      "name": "Local Administrators membership",
+      "description": "Account is a direct or nested member of the built-in local Administrators group. Recognises exactly that name, case-sensitively: a renamed group or a non-English locale is not flagged.",
+      "severity": "critical",
+      "pathPattern": {
+        "edgeType": "MEMBER_OF",
+        "targetType": "grp",
+        "match": {
+          "field": "displayName",
+          "operator": "equals",
+          "value": "Administrators"
+        }
+      }
+    }
+  ]
+}

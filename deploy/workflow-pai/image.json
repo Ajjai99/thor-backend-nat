@@ -1,0 +1,8 @@
+{
+  "service": "workflow-pai",
+  "dev": {
+    "digest": "sphereco.jfrog.io/thor-docker-local/workflow-pai@sha256:49e46c5a50aeb8e3279c0c51ae89ded58134883b6e04d04e18bfd565970643e9",
+    "commitId": "98590054ced8d3f8cb5df106802dee111e986444",
+    "deployedAt": "2026-10-13T20:36:30Z"
+  }
+}

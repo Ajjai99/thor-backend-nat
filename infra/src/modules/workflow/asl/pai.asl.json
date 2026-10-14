@@ -1,0 +1,328 @@
+{
+  "Comment": "Thor PAI workflow. Materialises every route by which an account reaches a privileged target. StartRun stages the targets this run recomputes - every matching target for a new or edited definition, otherwise only those the scan's changes can affect. Expand walks the group layer down from each target a level at a time; then waves of a Distributed Map join each staged path to its direct account members and write the routes, and Finalize prunes the routes the run did not re-prove. Started by the scan-completion gate (Thor.ScanGate) with {TenantId, ScanId}. Terraform substitutes the placeholders with templatefile; validate edits with: aws stepfunctions validate-state-machine-definition.",
+  "StartAt": "Envelope",
+  "States": {
+    "Envelope": {
+      "Type": "Pass",
+      "Parameters": {
+        "Request.$": "$"
+      },
+      "ResultPath": "$",
+      "Next": "StartRun"
+    },
+    "StartRun": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Comment": "Validates the request, opens the run's workflow row, seeds definitions from config, stages the targets to compute or retire, and hands back the first fan-out wave. The wave is only offsets into paths Expand has yet to stage, so it can be planned here.",
+      "Parameters": {
+        "FunctionName": "${lambda_arn_start_run}",
+        "Payload.$": "$.Request"
+      },
+      "ResultSelector": {
+        "WaveIndex.$": "$.Payload.WaveIndex",
+        "Chunks.$": "$.Payload.Chunks",
+        "HasMore.$": "$.Payload.HasMore"
+      },
+      "ResultPath": "$.Wave",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "IntervalSeconds": 30,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.Error",
+          "Next": "RecordFailure"
+        }
+      ],
+      "Next": "Expand"
+    },
+    "Expand": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Comment": "Stages the simple paths down the group layer from each target, one batched Neptune hop per level. Stops on a time budget and answers IsInProgress; ExpandCheck invokes it again and it resumes from the deepest staged level, which is always a finished one.",
+      "Parameters": {
+        "FunctionName": "${lambda_arn_expand}",
+        "Payload.$": "$.Request"
+      },
+      "ResultSelector": {
+        "IsInProgress.$": "$.Payload.IsInProgress"
+      },
+      "ResultPath": "$.Expand",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "IntervalSeconds": 30,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.Error",
+          "Next": "RecordFailure"
+        }
+      ],
+      "Next": "ExpandCheck"
+    },
+    "ExpandCheck": {
+      "Type": "Choice",
+      "Comment": "No Wait between turns: an in-progress expand has just spent its whole budget working.",
+      "Choices": [
+        {
+          "Variable": "$.Expand.IsInProgress",
+          "BooleanEquals": true,
+          "Next": "Expand"
+        }
+      ],
+      "Default": "FanoutWave"
+    },
+    "FanoutWave": {
+      "Type": "Map",
+      "Label": "FanoutWave",
+      "Comment": "Each item is a window of the run's staged paths - an offset and a limit - and the invocation reads its own rows for it. Items arrive complete from StartRun and NextWave, so there is no ItemSelector: ScanId and RunId are optional, and a reference path that resolves to nothing fails the execution. MaxConcurrency is the connection dial: each body opens a read and a write connection. Results come back inline because NextWave reads the counts. A failed item is tolerated: RecordChunkFailure marks its paths failed, so Finalize never prunes their targets.",
+      "ItemsPath": "$.Wave.Chunks",
+      "MaxConcurrency": ${map_max_concurrency},
+      "ResultSelector": {
+        "Results.$": "$[*].Payload"
+      },
+      "ResultPath": "$.WaveResult",
+      "ItemProcessor": {
+        "ProcessorConfig": {
+          "Mode": "DISTRIBUTED",
+          "ExecutionType": "STANDARD"
+        },
+        "StartAt": "FanoutChunk",
+        "States": {
+          "FanoutChunk": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::lambda:invoke",
+            "Parameters": {
+              "FunctionName": "${lambda_arn_fanout}",
+              "Payload.$": "$"
+            },
+            "Retry": [
+              {
+                "ErrorEquals": [
+                  "States.ALL"
+                ],
+                "IntervalSeconds": 30,
+                "MaxAttempts": 3,
+                "BackoffRate": 2
+              }
+            ],
+            "Catch": [
+              {
+                "ErrorEquals": [
+                  "States.ALL"
+                ],
+                "Comment": "ResultPath $.Error merges the error into the item, so the next state has both the window that was lost and why.",
+                "ResultPath": "$.Error",
+                "Next": "RecordChunkFailure"
+              }
+            ],
+            "End": true
+          },
+          "RecordChunkFailure": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::lambda:invoke",
+            "Comment": "Marks this window's paths failed and appends it to the run's workflow.error before the run moves on without it.",
+            "Parameters": {
+              "FunctionName": "${lambda_arn_record_chunk_failure}",
+              "Payload.$": "$"
+            },
+            "ResultPath": null,
+            "Retry": [
+              {
+                "ErrorEquals": [
+                  "States.ALL"
+                ],
+                "IntervalSeconds": 5,
+                "MaxAttempts": 2,
+                "BackoffRate": 2
+              }
+            ],
+            "Catch": [
+              {
+                "ErrorEquals": [
+                  "States.ALL"
+                ],
+                "Comment": "Failing to write the record must not fail the run - that would undo the tolerating this state exists to support.",
+                "ResultPath": null,
+                "Next": "FanoutChunkTolerated"
+              }
+            ],
+            "Next": "FanoutChunkTolerated"
+          },
+          "FanoutChunkTolerated": {
+            "Type": "Pass",
+            "Comment": "Wrapped in Payload so the Map's ResultSelector ($[*].Payload) picks a tolerated item up the same way it picks up a successful one.",
+            "Parameters": {
+              "Payload": {
+                "Failed": true,
+                "Offset.$": "$.Offset"
+              }
+            },
+            "End": true
+          }
+        }
+      },
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "IntervalSeconds": 30,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.Error",
+          "Next": "RecordFailure"
+        }
+      ],
+      "Next": "NextWave"
+    },
+    "NextWave": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Comment": "Sums the paths the wave read: a full wave may be followed by more, a short one ends the loop. Touches no database.",
+      "Parameters": {
+        "FunctionName": "${lambda_arn_next_wave}",
+        "Payload": {
+          "Request.$": "$.Request",
+          "WaveIndex.$": "$.Wave.WaveIndex",
+          "Results.$": "$.WaveResult.Results"
+        }
+      },
+      "ResultSelector": {
+        "WaveIndex.$": "$.Payload.WaveIndex",
+        "Chunks.$": "$.Payload.Chunks",
+        "HasMore.$": "$.Payload.HasMore"
+      },
+      "ResultPath": "$.Wave",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "IntervalSeconds": 30,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.Error",
+          "Next": "RecordFailure"
+        }
+      ],
+      "Next": "MoreWaves"
+    },
+    "MoreWaves": {
+      "Type": "Choice",
+      "Comment": "The loop. Each turn costs a handful of execution-history events against the 25,000 cap - the answer to a tenant that approaches it is a bigger chunk, not a deeper loop.",
+      "Choices": [
+        {
+          "Variable": "$.Wave.HasMore",
+          "BooleanEquals": true,
+          "Next": "FanoutWave"
+        }
+      ],
+      "Default": "Finalize"
+    },
+    "Finalize": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Comment": "Prunes the routes the run was answerable for but did not re-prove, closes the workflow row - completed_with_errors if any chunk was tolerated - and drops the run's staging.",
+      "Parameters": {
+        "FunctionName": "${lambda_arn_finalize}",
+        "Payload.$": "$.Request"
+      },
+      "ResultPath": null,
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "IntervalSeconds": 30,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.Error",
+          "Next": "RecordFailure"
+        }
+      ],
+      "Next": "WorkflowSucceeded"
+    },
+    "RecordFailure": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Comment": "Closes the run's workflow row as failed. Here rather than in each step's own try/catch because a Lambda killed by its timeout or by running out of memory runs no catch block. This is the run dying, not a chunk failing - a chunk is tolerated inside the Map.",
+      "Parameters": {
+        "FunctionName": "${lambda_arn_record_failure}",
+        "Payload": {
+          "Request.$": "$.Request",
+          "Error.$": "$.Error"
+        }
+      },
+      "ResultPath": null,
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 2,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Comment": "Failing to record the failure must not swallow the failure.",
+          "ResultPath": null,
+          "Next": "WorkflowFailed"
+        }
+      ],
+      "Next": "WorkflowFailed"
+    },
+    "WorkflowSucceeded": {
+      "Type": "Succeed"
+    },
+    "WorkflowFailed": {
+      "Type": "Fail",
+      "Error": "WorkflowFailed",
+      "Cause": "See the run's workflow row - status 'failed', with the error in the error column. The run's scans stay uncovered, so the next PAI run picks their changes up."
+    }
+  }
+}

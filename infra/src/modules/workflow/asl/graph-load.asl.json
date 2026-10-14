@@ -1,0 +1,221 @@
+{
+  "Comment": "Thor graph-load workflow: writes one scan's changes into Neptune, once per scan. Started by the scan-completion gate as graph-load-{scanId} once every manifest of the scan has finished ingestion. StartRun lists what the scan changed from Postgres and hands back wave zero; a Distributed Map writes each wave's chunks as batched mergeV/mergeE upserts, every vertex wave before any edge wave; Finalize removes what the scan soft-deleted. Its end - success or failure - is an execution event the scan-completion gate watches: once the load succeeded and ATRE and Ownership are done, the gate starts PAI. Terraform substitutes the placeholders with templatefile; validate edits with: aws stepfunctions validate-state-machine-definition.",
+  "StartAt": "Envelope",
+  "States": {
+    "Envelope": {
+      "Type": "Pass",
+      "Parameters": {
+        "Request.$": "$"
+      },
+      "ResultPath": "$",
+      "Next": "StartRun"
+    },
+    "StartRun": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Comment": "Opens the scan's graph-load row, lists from Postgres everything the scan's successfully ingested manifests changed - and every endpoint of a changed edge - as files of ids, writes the plan to S3 and hands back wave zero.",
+      "Parameters": {
+        "FunctionName": "${lambda_arn_start_run}",
+        "Payload.$": "$.Request"
+      },
+      "ResultSelector": {
+        "WaveIndex.$": "$.Payload.WaveIndex",
+        "Chunks.$": "$.Payload.Chunks",
+        "HasMore.$": "$.Payload.HasMore"
+      },
+      "ResultPath": "$.Wave",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "IntervalSeconds": 30,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.Error",
+          "Next": "RecordFailure"
+        }
+      ],
+      "Next": "MoreWaves"
+    },
+    "MoreWaves": {
+      "Type": "Choice",
+      "Comment": "The loop. HasMore is true while the wave carries chunks. Every vertex wave comes before every edge wave, because mergeE needs both endpoints to exist and a wave is the only barrier here. Each turn costs a handful of history events against the 25,000 cap - a scan approaching it wants bigger chunks, not a deeper loop.",
+      "Choices": [
+        {
+          "Variable": "$.Wave.HasMore",
+          "BooleanEquals": true,
+          "Next": "WriteWave"
+        }
+      ],
+      "Default": "Finalize"
+    },
+    "WriteWave": {
+      "Type": "Map",
+      "Label": "WriteWave",
+      "Comment": "One item per file of ids; each invocation reads its rows from Postgres and writes them as batched mergeV/mergeE upserts. Items arrive complete from StartRun and NextWave, so there is no ItemSelector. MaxConcurrency times each chunk's own parallelism is this scan's share of the Neptune writer - every tenant's scans write at once instead of queueing behind each other - and each body holds one tenant database connection. No failure is tolerated: a lost vertex chunk would fail every edge chunk that touches it. Upserts are idempotent by id, so the retry - and a redrive of a failed execution - rewrites safely.",
+      "ItemsPath": "$.Wave.Chunks",
+      "MaxConcurrency": ${map_max_concurrency},
+      "ResultPath": null,
+      "ItemProcessor": {
+        "ProcessorConfig": {
+          "Mode": "DISTRIBUTED",
+          "ExecutionType": "STANDARD"
+        },
+        "StartAt": "WriteChunk",
+        "States": {
+          "WriteChunk": {
+            "Type": "Task",
+            "Resource": "arn:aws:states:::lambda:invoke",
+            "Parameters": {
+              "FunctionName": "${lambda_arn_write_chunk}",
+              "Payload.$": "$"
+            },
+            "ResultSelector": {
+              "Key.$": "$.Payload.Key",
+              "Elements.$": "$.Payload.Elements"
+            },
+            "Retry": [
+              {
+                "ErrorEquals": [
+                  "States.ALL"
+                ],
+                "IntervalSeconds": 15,
+                "MaxAttempts": 3,
+                "BackoffRate": 2
+              }
+            ],
+            "End": true
+          }
+        }
+      },
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.Error",
+          "Next": "RecordFailure"
+        }
+      ],
+      "Next": "NextWave"
+    },
+    "NextWave": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Comment": "Reads the plan and hands back the next wave, or an empty one once every chunk is written.",
+      "Parameters": {
+        "FunctionName": "${lambda_arn_next_wave}",
+        "Payload": {
+          "Request.$": "$.Request",
+          "WaveIndex.$": "$.Wave.WaveIndex"
+        }
+      },
+      "ResultSelector": {
+        "WaveIndex.$": "$.Payload.WaveIndex",
+        "Chunks.$": "$.Payload.Chunks",
+        "HasMore.$": "$.Payload.HasMore"
+      },
+      "ResultPath": "$.Wave",
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "IntervalSeconds": 30,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.Error",
+          "Next": "RecordFailure"
+        }
+      ],
+      "Next": "MoreWaves"
+    },
+    "Finalize": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Comment": "Removes from the graph what the scan soft-deleted - only now, once every write succeeded - and closes the scan's graph-load row.",
+      "Parameters": {
+        "FunctionName": "${lambda_arn_finalize}",
+        "Payload.$": "$.Request"
+      },
+      "ResultPath": null,
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "IntervalSeconds": 30,
+          "MaxAttempts": 3,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "ResultPath": "$.Error",
+          "Next": "RecordFailure"
+        }
+      ],
+      "Next": "WorkflowSucceeded"
+    },
+    "RecordFailure": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Comment": "Closes the scan's graph-load row as failed - the one place that sees a chunk killed by its timeout. No DLQ: the gate started this run once, a failed one is redriven, and the row records why. The gate holds PAI back while this row says failed.",
+      "Parameters": {
+        "FunctionName": "${lambda_arn_record_failure}",
+        "Payload": {
+          "Request.$": "$.Request",
+          "Error.$": "$.Error"
+        }
+      },
+      "ResultPath": null,
+      "Retry": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "IntervalSeconds": 5,
+          "MaxAttempts": 2,
+          "BackoffRate": 2
+        }
+      ],
+      "Catch": [
+        {
+          "ErrorEquals": [
+            "States.ALL"
+          ],
+          "Comment": "Failing to record the failure must not swallow it; the execution still ends failed with the original error in its history.",
+          "ResultPath": null,
+          "Next": "WorkflowFailed"
+        }
+      ],
+      "Next": "WorkflowFailed"
+    },
+    "WorkflowSucceeded": {
+      "Type": "Succeed"
+    },
+    "WorkflowFailed": {
+      "Type": "Fail",
+      "Error": "GraphLoadFailed",
+      "Cause": "See the scan's graph-load workflow row for the error. Every write is an idempotent upsert, so redriving this execution resumes it safely."
+    }
+  }
+}

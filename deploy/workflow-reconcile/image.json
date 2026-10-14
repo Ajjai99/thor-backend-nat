@@ -1,0 +1,8 @@
+{
+  "service": "workflow-reconcile",
+  "dev": {
+    "digest": "sphereco.jfrog.io/thor-docker-local/workflow-reconcile@sha256:2230465841b17f1fcf3829e1c239211213a050d27b28f7024db67ad8982ed99c",
+    "commitId": "98590054ced8d3f8cb5df106802dee111e986444",
+    "deployedAt": "2026-10-13T20:36:19Z"
+  }
+}

@@ -1,0 +1,9 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Thor.ScanGate.Core/Thor.ScanGate.Core.csproj" />
+    <Project Path="src/Thor.ScanGate.Function/Thor.ScanGate.Function.csproj" />
+  </Folder>
+  <Folder Name="/test/">
+    <Project Path="test/Thor.ScanGate.Test/Thor.ScanGate.Test.csproj" />
+  </Folder>
+</Solution>
