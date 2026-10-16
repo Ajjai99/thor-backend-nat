@@ -1,0 +1,128 @@
+name: Performance Test
+
+# Manual JMeter load test from a throwaway EC2 instance (POC: infra/poc/perf-test). Nobody logs in to the
+# instance: it runs perf-tests/run-on-instance.sh at boot, writes results to S3 and terminates itself. The HTML
+# report stays in the private results bucket only — this repo is public, so it is never attached to the run.
+# Instance type comes from the launch template (t3.medium); test settings are fixed below.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: performance-test
+  cancel-in-progress: false
+
+env:
+  NAME_PREFIX: thor-prod-perf # matches infra/poc/perf-test (environment = "prod")
+  JMETER_VERSION: "5.6.3"
+  TEST_PLAN: perf-tests/dummy-public-data.jmx
+  THREADS: "5"
+  LOOPS: "20"
+  MAX_MINUTES: "60" # hard limit: the instance terminates after this
+
+jobs:
+  run:
+    # The prod GitHub environment has no branch policy of its own, so only main may start a run.
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: prod
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.PERF_AWS_ROLE_ARN }}
+          aws-region: ${{ vars.PERF_AWS_REGION }}
+
+      - name: Ensure JMeter is in S3
+        env:
+          BUCKET: ${{ vars.PERF_RESULTS_BUCKET }}
+        run: |
+          key="tools/apache-jmeter-${JMETER_VERSION}.tgz"
+          if aws s3api head-object --bucket "$BUCKET" --key "$key" >/dev/null 2>&1; then
+            echo "JMeter ${JMETER_VERSION} already in S3"; exit 0
+          fi
+          base="https://archive.apache.org/dist/jmeter/binaries/apache-jmeter-${JMETER_VERSION}.tgz"
+          curl -sSfL -o jmeter.tgz "$base"
+          echo "$(curl -sSfL "${base}.sha512" | awk '{print $1}')  jmeter.tgz" | sha512sum -c -
+          aws s3 cp --only-show-errors jmeter.tgz "s3://${BUCKET}/${key}"
+
+      - name: Upload test plan
+        id: plan
+        env:
+          BUCKET: ${{ vars.PERF_RESULTS_BUCKET }}
+        run: |
+          run_id="$(date -u +%Y%m%dT%H%M%SZ)-${GITHUB_RUN_ID}"
+          aws s3 cp --only-show-errors "$TEST_PLAN" "s3://${BUCKET}/runs/${run_id}/plan.jmx"
+          echo "run_id=${run_id}" >> "$GITHUB_OUTPUT"
+
+      - name: Launch load generator
+        id: launch
+        env:
+          BUCKET: ${{ vars.PERF_RESULTS_BUCKET }}
+          LAUNCH_TEMPLATE_ID: ${{ vars.PERF_LAUNCH_TEMPLATE_ID }}
+          RUN_ID: ${{ steps.plan.outputs.run_id }}
+        run: |
+          {
+            echo '#!/bin/bash'
+            printf 'BUCKET=%q RUN_ID=%q JMETER_VERSION=%q THREADS=%q LOOPS=%q MAX_MINUTES=%q\n' \
+              "$BUCKET" "$RUN_ID" "$JMETER_VERSION" "$THREADS" "$LOOPS" "$MAX_MINUTES"
+            tail -n +2 perf-tests/run-on-instance.sh
+          } > user-data.sh
+          instance_id=$(aws ec2 run-instances \
+            --launch-template "LaunchTemplateId=${LAUNCH_TEMPLATE_ID},Version=\$Latest" \
+            --user-data file://user-data.sh \
+            --tag-specifications "ResourceType=instance,Tags=[{Key=Name,Value=${NAME_PREFIX}-${RUN_ID}},{Key=Purpose,Value=perf-test},{Key=RunId,Value=${RUN_ID}}]" \
+            --query 'Instances[0].InstanceId' --output text)
+          echo "instance_id=${instance_id}" >> "$GITHUB_OUTPUT"
+          echo "Launched ${instance_id} for run ${RUN_ID}"
+
+      - name: Wait for the run to finish
+        env:
+          BUCKET: ${{ vars.PERF_RESULTS_BUCKET }}
+          RUN_ID: ${{ steps.plan.outputs.run_id }}
+          INSTANCE_ID: ${{ steps.launch.outputs.instance_id }}
+        run: |
+          deadline=$(( $(date +%s) + (MAX_MINUTES + 5) * 60 ))
+          until aws s3api head-object --bucket "$BUCKET" --key "runs/${RUN_ID}/DONE" >/dev/null 2>&1; do
+            state=$(aws ec2 describe-instances --instance-ids "$INSTANCE_ID" --query 'Reservations[0].Instances[0].State.Name' --output text)
+            if [[ "$state" == "terminated" ]] || (( $(date +%s) > deadline )); then
+              echo "::error::No DONE marker (instance state: ${state})"; exit 1
+            fi
+            echo "$(date -u +%H:%M:%S) running (instance ${state})"
+            sleep 30
+          done
+          aws s3 cp --only-show-errors "s3://${BUCKET}/runs/${RUN_ID}/DONE" done.txt
+          echo "Instance reported: $(cat done.txt)"
+          grep -qx 'exit=0' done.txt || { echo "::error::Test run failed — see runs/${RUN_ID}/results/run.log"; exit 1; }
+
+      - name: Summary
+        if: always() && steps.plan.outputs.run_id != ''
+        env:
+          BUCKET: ${{ vars.PERF_RESULTS_BUCKET }}
+          RUN_ID: ${{ steps.plan.outputs.run_id }}
+        run: |
+          uri="s3://${BUCKET}/runs/${RUN_ID}/results/"
+          {
+            echo "### Performance test ${RUN_ID}"
+            echo "Results (private bucket): \`${uri}\` — open \`report/index.html\` after downloading."
+            if aws s3 cp --only-show-errors "${uri}report/statistics.json" stats.json 2>/dev/null; then
+              echo
+              echo "| Request | Samples | Errors % | Mean ms | p90 ms | p99 ms | Req/s |"
+              echo "|---|---|---|---|---|---|---|"
+              jq -r 'to_entries[] | .value | "| \(.transaction) | \(.sampleCount) | \(.errorPct | . * 100 | round / 100) | \(.meanResTime | round) | \(.pct1ResTime | round) | \(.pct3ResTime | round) | \(.throughput | . * 100 | round / 100) |"' stats.json
+            else
+              echo "No statistics.json — the report wasn't generated."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Terminate instance (safety net)
+        if: always() && steps.launch.outputs.instance_id != ''
+        env:
+          INSTANCE_ID: ${{ steps.launch.outputs.instance_id }}
+        run: aws ec2 terminate-instances --instance-ids "$INSTANCE_ID" --query 'TerminatingInstances[0].CurrentState.Name' --output text
