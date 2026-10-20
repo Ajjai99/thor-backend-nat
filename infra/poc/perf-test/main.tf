@@ -201,6 +201,7 @@ resource "aws_launch_template" "jmeter" {
   image_id                             = nonsensitive(data.aws_ssm_parameter.al2023.value)
   instance_type                        = var.default_instance_type
   instance_initiated_shutdown_behavior = "terminate" # the run script's final `shutdown` deletes the instance
+  update_default_version               = true        # each change becomes the default, not just $Latest
 
   iam_instance_profile {
     arn = aws_iam_instance_profile.jmeter.arn
