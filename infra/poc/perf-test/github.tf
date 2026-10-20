@@ -99,7 +99,7 @@ resource "aws_iam_role_policy" "github" {
       {
         Sid      = "Describe"
         Effect   = "Allow"
-        Action   = ["ec2:DescribeInstances", "ec2:DescribeInstanceStatus"]
+        Action   = ["ec2:DescribeInstances", "ec2:DescribeInstanceStatus", "ec2:DescribeLaunchTemplateVersions"]
         Resource = "*"
       },
       {

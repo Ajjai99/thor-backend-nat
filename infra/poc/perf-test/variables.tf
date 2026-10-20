@@ -11,14 +11,14 @@ variable "aws_region" {
 
 variable "default_instance_type" {
   type        = string
-  description = "Launch template default; the workflow can override it per run"
-  default     = "t3.medium"
+  description = "QA requirement: c5n.2xlarge (8 vCPU, 21 GiB, up to 25 Gbps) for sustained load; c5n.4xlarge later"
+  default     = "c5n.2xlarge"
 }
 
 variable "root_volume_gb" {
   type        = number
-  description = "Holds JMeter, the .jtl results and the HTML report — millions of samples need several GB"
-  default     = 30
+  description = "QA requirement: 50 GB gp3 for the ZIP data pool, logs and results"
+  default     = 50
 }
 
 variable "results_retention_days" {
