@@ -3,10 +3,37 @@ name: Performance Test
 # Manual JMeter load test from a throwaway EC2 instance (POC: infra/poc/perf-test). Nobody logs in to the
 # instance: it runs perf-tests/run-on-instance.sh at boot, writes results to S3 and terminates itself. The HTML
 # report stays in the private results bucket only — this repo is public, so it is never attached to the run.
-# Instance type (t3.xlarge; c5n is SCP-blocked in the sandbox) and disk (50 GB gp3) come from the launch template; test settings are fixed below.
+# Instance type (t3.xlarge; c5n is SCP-blocked in the sandbox) and disk (50 GB gp3) come from the launch template.
+# Load settings come from the Run workflow inputs, which override the same keys in perf-tests/config/config.properties.
 
 on:
   workflow_dispatch:
+    inputs:
+      thread_count:
+        description: Concurrent users (thread.count)
+        type: string
+        default: "5"
+        required: true
+      ramp_up_seconds:
+        description: Seconds to start all users (ramp.up.seconds)
+        type: string
+        default: "10"
+        required: true
+      test_duration_seconds:
+        description: How long the test runs, in seconds (test.duration.seconds)
+        type: string
+        default: "120"
+        required: true
+      think_time_min_ms:
+        description: Minimum pause between requests, in ms (think.time.min.ms)
+        type: string
+        default: "0"
+        required: true
+      think_time_max_ms:
+        description: Maximum pause between requests, in ms (think.time.max.ms)
+        type: string
+        default: "500"
+        required: true
 
 permissions:
   id-token: write
@@ -21,9 +48,14 @@ env:
   JMETER_VERSION: "5.6.3"
   JMETER_HEAP: "-Xms4g -Xmx8g -XX:MaxMetaspaceSize=256m" # QA requirement; fits t3.xlarge's 16 GiB
   TEST_PLAN: perf-tests/dummy-public-data.jmx
-  THREADS: "5"
-  LOOPS: "20"
+  CONFIG_FILE: perf-tests/config/config.properties
   MAX_MINUTES: "60" # hard limit: the instance terminates after this
+  # Run workflow inputs, passed to JMeter as -J (via env, never pasted into scripts).
+  THREAD_COUNT: ${{ inputs.thread_count }}
+  RAMP_UP_SECONDS: ${{ inputs.ramp_up_seconds }}
+  TEST_DURATION_SECONDS: ${{ inputs.test_duration_seconds }}
+  THINK_TIME_MIN_MS: ${{ inputs.think_time_min_ms }}
+  THINK_TIME_MAX_MS: ${{ inputs.think_time_max_ms }}
 
 jobs:
   run:
@@ -41,7 +73,7 @@ jobs:
           aws-region: ${{ vars.PERF_AWS_REGION }}
 
       # ------------------------------------------------------------------------------------------------------------
-      - name: Show run settings
+      - name: Show and check run settings
         env:
           BUCKET: ${{ vars.PERF_RESULTS_BUCKET }}
           LAUNCH_TEMPLATE_ID: ${{ vars.PERF_LAUNCH_TEMPLATE_ID }}
@@ -50,12 +82,39 @@ jobs:
 
           echo "▶ [1/7] Performance test settings"
           echo "  Test plan      : ${TEST_PLAN}"
-          echo "  Users / loops  : ${THREADS} users x ${LOOPS} loops"
+          echo "  Config file    : ${CONFIG_FILE}"
+          echo "  Users          : ${THREAD_COUNT} (started over ${RAMP_UP_SECONDS}s)"
+          echo "  Duration       : ${TEST_DURATION_SECONDS}s"
+          echo "  Think time     : ${THINK_TIME_MIN_MS}-${THINK_TIME_MAX_MS} ms between requests"
           echo "  JMeter         : ${JMETER_VERSION} (heap ${JMETER_HEAP})"
           echo "  Time limit     : ${MAX_MINUTES} min (instance terminates itself after this)"
           echo "  Results bucket : s3://${BUCKET}"
           echo "  Launch template: ${LAUNCH_TEMPLATE_ID}"
           echo "  AWS identity   : ${identity}"
+
+          # --- Every input must be a whole number ---
+          for name in THREAD_COUNT RAMP_UP_SECONDS TEST_DURATION_SECONDS THINK_TIME_MIN_MS THINK_TIME_MAX_MS; do
+            if [[ ! "${!name}" =~ ^(0|[1-9][0-9]{0,6})$ ]]; then # no leading zeros: bash would read 08 as octal
+              echo "::error::${name} must be a whole number (got '${!name}')"
+              exit 1
+            fi
+          done
+          if (( THREAD_COUNT < 1 || TEST_DURATION_SECONDS < 1 )); then
+            echo "::error::thread_count and test_duration_seconds must be at least 1"
+            exit 1
+          fi
+          if (( THINK_TIME_MIN_MS > THINK_TIME_MAX_MS )); then
+            echo "::error::think_time_min_ms (${THINK_TIME_MIN_MS}) is larger than think_time_max_ms (${THINK_TIME_MAX_MS})"
+            exit 1
+          fi
+
+          # --- The test must fit inside the instance's time limit, leaving 10 min for setup and the report ---
+          budget=$(( (MAX_MINUTES - 10) * 60 ))
+          if (( RAMP_UP_SECONDS + TEST_DURATION_SECONDS > budget )); then
+            echo "::error::ramp-up + duration ($(( RAMP_UP_SECONDS + TEST_DURATION_SECONDS ))s) is over the ${budget}s limit (MAX_MINUTES=${MAX_MINUTES})"
+            exit 1
+          fi
+          echo "✔ Settings are valid."
 
       # ------------------------------------------------------------------------------------------------------------
       - name: Ensure JMeter is in S3
@@ -93,18 +152,19 @@ jobs:
           echo "✔ JMeter ${JMETER_VERSION} is now in S3."
 
       # ------------------------------------------------------------------------------------------------------------
-      - name: Upload test plan
+      - name: Upload test plan and config
         id: plan
         env:
           BUCKET: ${{ vars.PERF_RESULTS_BUCKET }}
         run: |
           run_id="$(date -u +%Y%m%dT%H%M%SZ)-${GITHUB_RUN_ID}"
-          plan_uri="s3://${BUCKET}/runs/${run_id}/plan.jmx"
+          run_uri="s3://${BUCKET}/runs/${run_id}"
 
-          echo "▶ [3/7] Uploading test plan ${TEST_PLAN}"
-          echo "  Run ID: ${run_id} (all of this run's files go under s3://${BUCKET}/runs/${run_id}/)"
-          aws s3 cp --only-show-errors "$TEST_PLAN" "$plan_uri"
-          echo "✔ Uploaded to ${plan_uri}"
+          echo "▶ [3/7] Uploading test plan ${TEST_PLAN} and ${CONFIG_FILE}"
+          echo "  Run ID: ${run_id} (all of this run's files go under ${run_uri}/)"
+          aws s3 cp --only-show-errors "$TEST_PLAN" "${run_uri}/plan.jmx"
+          aws s3 cp --only-show-errors "$CONFIG_FILE" "${run_uri}/config.properties"
+          echo "✔ Uploaded to ${run_uri}/plan.jmx and ${run_uri}/config.properties"
 
           echo "run_id=${run_id}" >> "$GITHUB_OUTPUT"
 
@@ -122,8 +182,10 @@ jobs:
           echo "  Building the instance start-up script: run settings + perf-tests/run-on-instance.sh"
           {
             echo '#!/bin/bash'
-            printf 'BUCKET=%q RUN_ID=%q JMETER_VERSION=%q JMETER_HEAP=%q THREADS=%q LOOPS=%q MAX_MINUTES=%q\n' \
-              "$BUCKET" "$RUN_ID" "$JMETER_VERSION" "$JMETER_HEAP" "$THREADS" "$LOOPS" "$MAX_MINUTES"
+            printf 'BUCKET=%q RUN_ID=%q JMETER_VERSION=%q JMETER_HEAP=%q MAX_MINUTES=%q\n' \
+              "$BUCKET" "$RUN_ID" "$JMETER_VERSION" "$JMETER_HEAP" "$MAX_MINUTES"
+            printf 'THREAD_COUNT=%q RAMP_UP_SECONDS=%q TEST_DURATION_SECONDS=%q THINK_TIME_MIN_MS=%q THINK_TIME_MAX_MS=%q\n' \
+              "$THREAD_COUNT" "$RAMP_UP_SECONDS" "$TEST_DURATION_SECONDS" "$THINK_TIME_MIN_MS" "$THINK_TIME_MAX_MS"
             tail -n +2 perf-tests/run-on-instance.sh
           } > user-data.sh
 

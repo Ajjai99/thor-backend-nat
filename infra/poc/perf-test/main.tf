@@ -168,9 +168,13 @@ resource "aws_iam_role_policy" "jmeter_s3" {
     Version = "2012-10-17"
     Statement = [
       {
-        Effect   = "Allow"
-        Action   = "s3:GetObject"
-        Resource = ["${aws_s3_bucket.results.arn}/tools/*", "${aws_s3_bucket.results.arn}/runs/*/plan.jmx"]
+        Effect = "Allow"
+        Action = "s3:GetObject"
+        Resource = [
+          "${aws_s3_bucket.results.arn}/tools/*",
+          "${aws_s3_bucket.results.arn}/runs/*/plan.jmx",
+          "${aws_s3_bucket.results.arn}/runs/*/config.properties",
+        ]
       },
       {
         Effect   = "Allow"

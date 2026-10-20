@@ -1,8 +1,13 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
   Placeholder load test until QA's real connector .jmx exists. Calls JSONPlaceholder, a free public fake REST API,
-  so keep the load small: it is someone else's service. Override with -J, e.g.
-    jmeter -n -t dummy-public-data.jmx -Jthreads=5 -Jloops=20 -l results.jtl -e -o report/
+  so keep the load small: it is someone else's service. Settings come from config/config.properties (-p), and
+  -J overrides them, e.g.
+    jmeter -n -t dummy-public-data.jmx -p config/config.properties \
+      -Jthread.count=5 -Jramp.up.seconds=10 -Jtest.duration.seconds=120 \
+      -Jthink.time.min.ms=0 -Jthink.time.max.ms=500 -l results.jtl -e -o report/
+  Each user repeats the three requests until test.duration.seconds is up, pausing a random
+  think.time.min.ms..think.time.max.ms before each one.
 -->
 <jmeterTestPlan version="1.2" properties="5.0" jmeter="5.6.3">
   <hashTree>
@@ -18,19 +23,22 @@
         <elementProp name="HTTPsampler.Arguments" elementType="Arguments" guiclass="HTTPArgumentsPanel" testclass="Arguments">
           <collectionProp name="Arguments.arguments"/>
         </elementProp>
-        <stringProp name="HTTPSampler.protocol">https</stringProp>
-        <stringProp name="HTTPSampler.domain">${__P(host,jsonplaceholder.typicode.com)}</stringProp>
-        <stringProp name="HTTPSampler.port">443</stringProp>
-        <stringProp name="HTTPSampler.connect_timeout">5000</stringProp>
-        <stringProp name="HTTPSampler.response_timeout">10000</stringProp>
+        <stringProp name="HTTPSampler.protocol">${__P(target.protocol,https)}</stringProp>
+        <stringProp name="HTTPSampler.domain">${__P(target.host,jsonplaceholder.typicode.com)}</stringProp>
+        <stringProp name="HTTPSampler.port">${__P(target.port,443)}</stringProp>
+        <stringProp name="HTTPSampler.connect_timeout">${__P(http.connect.timeout.ms,5000)}</stringProp>
+        <stringProp name="HTTPSampler.response_timeout">${__P(http.response.timeout.ms,10000)}</stringProp>
       </ConfigTestElement>
       <hashTree/>
       <ThreadGroup guiclass="ThreadGroupGui" testclass="ThreadGroup" testname="Users">
-        <stringProp name="ThreadGroup.num_threads">${__P(threads,5)}</stringProp>
-        <stringProp name="ThreadGroup.ramp_time">${__P(rampup,10)}</stringProp>
+        <stringProp name="ThreadGroup.num_threads">${__P(thread.count,5)}</stringProp>
+        <stringProp name="ThreadGroup.ramp_time">${__P(ramp.up.seconds,10)}</stringProp>
         <stringProp name="ThreadGroup.on_sample_error">continue</stringProp>
+        <boolProp name="ThreadGroup.scheduler">true</boolProp>
+        <stringProp name="ThreadGroup.duration">${__P(test.duration.seconds,120)}</stringProp>
+        <stringProp name="ThreadGroup.delay">0</stringProp>
         <elementProp name="ThreadGroup.main_controller" elementType="LoopController" guiclass="LoopControlPanel" testclass="LoopController">
-          <stringProp name="LoopController.loops">${__P(loops,20)}</stringProp>
+          <stringProp name="LoopController.loops">-1</stringProp>
           <boolProp name="LoopController.continue_forever">false</boolProp>
         </elementProp>
       </ThreadGroup>
@@ -71,9 +79,10 @@
           <intProp name="Assertion.test_type">8</intProp>
         </ResponseAssertion>
         <hashTree/>
-        <ConstantTimer guiclass="ConstantTimerGui" testclass="ConstantTimer" testname="Pause between requests">
-          <stringProp name="ConstantTimer.delay">${__P(pause_ms,200)}</stringProp>
-        </ConstantTimer>
+        <UniformRandomTimer guiclass="UniformRandomTimerGui" testclass="UniformRandomTimer" testname="Think time (min..max ms)">
+          <stringProp name="ConstantTimer.delay">${__P(think.time.min.ms,0)}</stringProp>
+          <stringProp name="RandomTimer.range">${__jexl3(${__P(think.time.max.ms,500)} - ${__P(think.time.min.ms,0)})}</stringProp>
+        </UniformRandomTimer>
         <hashTree/>
       </hashTree>
     </hashTree>
