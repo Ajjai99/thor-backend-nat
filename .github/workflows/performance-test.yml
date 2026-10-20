@@ -3,7 +3,7 @@ name: Performance Test
 # Manual JMeter load test from a throwaway EC2 instance (POC: infra/poc/perf-test). Nobody logs in to the
 # instance: it runs perf-tests/run-on-instance.sh at boot, writes results to S3 and terminates itself. The HTML
 # report stays in the private results bucket only — this repo is public, so it is never attached to the run.
-# Instance type (c5n.2xlarge) and disk (50 GB gp3) come from the launch template; test settings are fixed below.
+# Instance type (t3.xlarge; c5n is SCP-blocked in the sandbox) and disk (50 GB gp3) come from the launch template; test settings are fixed below.
 
 on:
   workflow_dispatch:
@@ -19,7 +19,7 @@ concurrency:
 env:
   NAME_PREFIX: thor-prod-perf # matches infra/poc/perf-test (environment = "prod")
   JMETER_VERSION: "5.6.3"
-  JMETER_HEAP: "-Xms4g -Xmx8g -XX:MaxMetaspaceSize=256m" # QA requirement; fits c5n.2xlarge's 21 GiB
+  JMETER_HEAP: "-Xms4g -Xmx8g -XX:MaxMetaspaceSize=256m" # QA requirement; fits t3.xlarge's 16 GiB
   TEST_PLAN: perf-tests/dummy-public-data.jmx
   THREADS: "5"
   LOOPS: "20"

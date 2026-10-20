@@ -10,9 +10,11 @@ variable "aws_region" {
 }
 
 variable "default_instance_type" {
-  type        = string
-  description = "QA requirement: c5n.2xlarge (8 vCPU, 21 GiB, up to 25 Gbps) for sustained load; c5n.4xlarge later"
-  default     = "c5n.2xlarge"
+  type = string
+  # QA wants c5n.2xlarge (25 Gbps; c5n.4xlarge later), but the sandbox account's SCP blocks every c5n size.
+  # t3.xlarge (4 vCPU, 16 GiB — fits the 8 GB JMeter heap) until an SCP exception is granted.
+  description = "Launch template instance type"
+  default     = "t3.xlarge"
 }
 
 variable "root_volume_gb" {
