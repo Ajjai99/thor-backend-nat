@@ -1,28 +1,21 @@
-# Performance-test POC
+# Performance-test infrastructure (POC)
 
-A JMeter load generator on EC2, run entirely from GitHub (`.github/workflows/performance-test.yml`) for a team with
-read-only AWS access. Nobody logs in to the instance.
+Terraform for the JMeter performance-test pipeline. How the pipeline works and how to run a test:
+[`perf-tests/README.md`](../../../perf-tests/README.md).
 
-```
-Run workflow (manual, no inputs)
-  → JMeter tarball to S3 (first run only) → test plan to S3 → launch EC2 from the launch template
-  → instance: dnf Java, JMeter + plan from S3, run, results to S3, write DONE, terminate itself
-  → workflow: wait for DONE, write a summary table, terminate the instance (safety net)
-```
+Creates (`var.environment = "prod"` → names `thor-prod-perf-*`): the S3 results bucket, the EC2 launch template
+(t3.xlarge, 50 GB gp3), the instance role, and the GitHub OIDC provider + role the workflow logs in with.
+In this POC it also builds its own VPC from the network module; in a real environment, use Thor's networking.
 
-Results: `s3://thor-prod-perf-results-<account>/runs/<run id>/results/` (`report/index.html`, `results.jtl`,
-`jmeter.log`, `run.log`), deleted after 30 days. Not attached to the GitHub run — the repo is public.
-
-## Setup
+## Apply
 
 ```bash
 cd infra/poc/perf-test
 terraform init && terraform apply
-terraform output     # four values for the GitHub environment
+terraform output     # set these four as variables on the GitHub `prod` environment
 ```
 
-In GitHub: use environment **`prod`** (runs only from `main`; add required reviewers so only approved people can start one) and
-set the four outputs as its variables. The workflow must be on the default branch to show "Run workflow".
+Apply before pushing a workflow change that needs new permissions.
 
 ## Teardown
 
