@@ -49,12 +49,12 @@ env:
   JMETER_HEAP: "-Xms4g -Xmx8g -XX:MaxMetaspaceSize=256m" # QA requirement; fits t3.xlarge's 16 GiB
   # Test inputs sent to the instance (and nothing else from perf-tests/), all paths inside perf-tests/.
   # The instance runs RUN_SCRIPT, which refers to the plan and config by name: rename them there too.
-  RUN_SCRIPT: perf-tests/run-dryrun.sh
-  TEST_PLAN: perf-tests/test-plan_smoke.jmx
-  CONFIG_FILE: perf-tests/config/config.dryrun.properties
+  RUN_SCRIPT: perf-tests/run.sh
+  TEST_PLAN: perf-tests/test-plan.jmx
+  CONFIG_FILE: perf-tests/config/config.ec2.properties
   TEST_DATA: perf-tests/config/test-data.csv
   ZIP_POOL: perf-tests/zip-pool
-  MAX_MINUTES: "60" # hard limit: the instance terminates after this
+  MAX_MINUTES: "75" # hard limit: the instance terminates after this
   # Run workflow inputs, passed to JMeter as -J (via env, never pasted into scripts).
   THREAD_COUNT: ${{ inputs.thread_count }}
   RAMP_UP_SECONDS: ${{ inputs.ramp_up_seconds }}
