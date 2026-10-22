@@ -43,7 +43,6 @@ jmeter \
     -p "${SCRIPT_DIR}/config/config.ec2.properties" \
     -l "${RESULT_FILE}" \
     -j "${LOG_FILE}" \
-    -Jresult.file="${RESULT_FILE}" \
     "$@"
 
 echo ""

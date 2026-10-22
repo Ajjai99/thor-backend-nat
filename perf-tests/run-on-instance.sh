@@ -33,7 +33,7 @@ collect_results() {
   for f in "$TESTS"/results/*; do
     [[ -e "$f" ]] || continue
     case "$(basename "$f")" in
-      *_report_*)   mv "$f" "$WORK/results/report" ;;      # dryrun_report_<time>/ → report/
+      report_*|*_report_*) mv "$f" "$WORK/results/report" ;; # report_<time>/, dryrun_report_<time>/ → report/
       *_[0-9]*.jtl) mv "$f" "$WORK/results/results.jtl" ;; # dryrun_<time>.jtl     → results.jtl
       *_[0-9]*.log) mv "$f" "$WORK/results/jmeter.log" ;;  # dryrun_<time>.log     → jmeter.log
       *)            mv "$f" "$WORK/results/" ;;            # e.g. the plan's own dryrun.jtl
