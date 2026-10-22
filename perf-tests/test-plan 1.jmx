@@ -1,0 +1,441 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<jmeterTestPlan version="1.2" properties="5.0" jmeter="5.6.3">
+  <hashTree>
+    <TestPlan guiclass="TestPlanGui" testclass="TestPlan" testname="THOR Performance Test" enabled="true">
+      <stringProp name="TestPlan.comments">THOR Connector Upload Performance Test - 100 clients, 3 connectors, 5M records target</stringProp>
+      <boolProp name="TestPlan.functional_mode">false</boolProp>
+      <boolProp name="TestPlan.serialize_threadgroups">false</boolProp>
+      <elementProp name="TestPlan.arguments" elementType="Arguments">
+        <collectionProp name="Arguments.arguments"/>
+      </elementProp>
+    </TestPlan>
+    <hashTree>
+
+      <!-- ═══════════════════════════════════════════════════════════
+           USER DEFINED VARIABLES
+           ═══════════════════════════════════════════════════════════ -->
+      <Arguments guiclass="ArgumentsPanel" testclass="Arguments" testname="Config Variables" enabled="true">
+        <collectionProp name="Arguments.arguments">
+          <elementProp name="API_BASE_URL" elementType="Argument">
+            <stringProp name="Argument.name">API_BASE_URL</stringProp>
+            <stringProp name="Argument.value">${__P(api.base.url,https://z392f87e7k.execute-api.us-east-2.amazonaws.com/dev)}</stringProp>
+          </elementProp>
+          <elementProp name="THREAD_COUNT" elementType="Argument">
+            <stringProp name="Argument.name">THREAD_COUNT</stringProp>
+            <stringProp name="Argument.value">${__P(thread.count,100)}</stringProp>
+          </elementProp>
+          <elementProp name="RAMP_UP_SECONDS" elementType="Argument">
+            <stringProp name="Argument.name">RAMP_UP_SECONDS</stringProp>
+            <stringProp name="Argument.value">${__P(ramp.up.seconds,300)}</stringProp>
+          </elementProp>
+          <elementProp name="TEST_DURATION" elementType="Argument">
+            <stringProp name="Argument.name">TEST_DURATION</stringProp>
+            <stringProp name="Argument.value">${__P(test.duration.seconds,7200)}</stringProp>
+          </elementProp>
+          <elementProp name="ZIP_POOL_PATH" elementType="Argument">
+            <stringProp name="Argument.name">ZIP_POOL_PATH</stringProp>
+            <stringProp name="Argument.value">${__P(zip.pool.path,zip-pool)}</stringProp>
+          </elementProp>
+        </collectionProp>
+      </Arguments>
+      <hashTree/>
+
+      <!-- ═══════════════════════════════════════════════════════════
+           HTTP DEFAULT CONFIG
+           ═══════════════════════════════════════════════════════════ -->
+      <ConfigTestElement guiclass="HttpDefaultsGui" testclass="ConfigTestElement" testname="HTTP Defaults" enabled="true">
+        <elementProp name="HTTPsampler.Arguments" elementType="Arguments">
+          <collectionProp name="Arguments.arguments"/>
+        </elementProp>
+        <stringProp name="HTTPSampler.connect_timeout">30000</stringProp>
+        <stringProp name="HTTPSampler.response_timeout">120000</stringProp>
+      </ConfigTestElement>
+      <hashTree/>
+
+      <!-- ═══════════════════════════════════════════════════════════
+           MAIN THREAD GROUP
+           ═══════════════════════════════════════════════════════════ -->
+      <ThreadGroup guiclass="ThreadGroupGui" testclass="ThreadGroup" testname="THOR Clients" enabled="true">
+        <stringProp name="ThreadGroup.on_sample_error">continue</stringProp>
+        <elementProp name="ThreadGroup.main_controller" elementType="LoopController" guiclass="LoopControlPanel" testclass="LoopController">
+          <boolProp name="LoopController.continue_forever">true</boolProp>
+          <intProp name="LoopController.loops">-1</intProp>
+        </elementProp>
+        <stringProp name="ThreadGroup.num_threads">${THREAD_COUNT}</stringProp>
+        <stringProp name="ThreadGroup.ramp_time">${RAMP_UP_SECONDS}</stringProp>
+        <boolProp name="ThreadGroup.scheduler">true</boolProp>
+        <stringProp name="ThreadGroup.duration">${TEST_DURATION}</stringProp>
+        <stringProp name="ThreadGroup.delay">0</stringProp>
+      </ThreadGroup>
+      <hashTree>
+
+        <!-- ── Combined CSV: 1 row per thread ──────────────────── -->
+        <CSVDataSet guiclass="TestBeanGUI" testclass="CSVDataSet" testname="Test Data CSV" enabled="true">
+          <stringProp name="filename">config/test-data.csv</stringProp>
+          <stringProp name="variableNames">client_id,api_key,actor_id,AD_task_1,AD_task_2,AD_task_3,AD_task_4,AD_task_5,AD_task_6,AD_task_7,AD_task_8,AD_task_9,AD_task_10,AD_source_id,WIN_task_1,WIN_task_2,WIN_task_3,WIN_task_4,WIN_task_5,WIN_task_6,WIN_task_7,WIN_task_8,WIN_task_9,WIN_task_10,WIN_source_id,CA_task_1,CA_task_2,CA_task_3,CA_task_4,CA_task_5,CA_task_6,CA_task_7,CA_task_8,CA_task_9,CA_task_10,CA_source_id</stringProp>
+          <stringProp name="delimiter">,</stringProp>
+          <boolProp name="quotedData">false</boolProp>
+          <boolProp name="recycle">true</boolProp>
+          <boolProp name="stopThread">false</boolProp>
+          <stringProp name="shareMode">shareMode.thread</stringProp>
+          <boolProp name="ignoreFirstLine">true</boolProp>
+        </CSVDataSet>
+        <hashTree/>
+
+        <!-- ── ONCE: Register ────────────────────────────────────── -->
+        <OnceOnlyController guiclass="OnceOnlyControllerGui" testclass="OnceOnlyController" testname="Register Once" enabled="true"/>
+        <hashTree>
+          <HTTPSamplerProxy guiclass="HttpTestSampleGui" testclass="HTTPSamplerProxy" testname="Register API" enabled="true">
+            <elementProp name="HTTPsampler.Arguments" elementType="Arguments">
+              <collectionProp name="Arguments.arguments">
+                <elementProp name="" elementType="HTTPArgument">
+                  <boolProp name="HTTPArgument.always_encode">false</boolProp>
+                  <stringProp name="Argument.value">{"roleType":"connector"}</stringProp>
+                  <stringProp name="Argument.metadata">=</stringProp>
+                  <boolProp name="HTTPArgument.use_equals">true</boolProp>
+                  <stringProp name="Argument.name"></stringProp>
+                </elementProp>
+              </collectionProp>
+            </elementProp>
+            <stringProp name="HTTPSampler.path">${API_BASE_URL}/v1/register</stringProp>
+            <stringProp name="HTTPSampler.method">POST</stringProp>
+            <boolProp name="HTTPSampler.follow_redirects">true</boolProp>
+            <boolProp name="HTTPSampler.use_keepalive">true</boolProp>
+            <boolProp name="HTTPSampler.postBodyRaw">true</boolProp>
+          </HTTPSamplerProxy>
+          <hashTree>
+            <HeaderManager guiclass="HeaderPanel" testclass="HeaderManager" testname="Register Headers" enabled="true">
+              <collectionProp name="HeaderManager.headers">
+                <elementProp name="" elementType="Header">
+                  <stringProp name="Header.name">x-task-api-key</stringProp>
+                  <stringProp name="Header.value">${api_key}</stringProp>
+                </elementProp>
+                <elementProp name="" elementType="Header">
+                  <stringProp name="Header.name">Content-Type</stringProp>
+                  <stringProp name="Header.value">application/json</stringProp>
+                </elementProp>
+              </collectionProp>
+            </HeaderManager>
+            <hashTree/>
+            <JSR223PostProcessor guiclass="TestBeanGUI" testclass="JSR223PostProcessor" testname="Extract Register Tokens" enabled="true">
+              <stringProp name="cacheKey">true</stringProp>
+              <stringProp name="filename"></stringProp>
+              <stringProp name="parameters"></stringProp>
+              <stringProp name="script">
+import groovy.json.JsonSlurper
+def body = prev.getResponseDataAsString()
+try {
+    def json = new JsonSlurper().parseText(body)
+    vars.put("access_token",  json.token        ?: "TOKEN_NOT_FOUND")
+    vars.put("refresh_token", json.refreshToken  ?: "REFRESH_NOT_FOUND")
+    vars.put("token_time",    String.valueOf(System.currentTimeMillis()))
+    log.info("Client ${vars.get('client_id')} registered. Token OK.")
+} catch (Exception e) {
+    vars.put("access_token",  "TOKEN_NOT_FOUND")
+    vars.put("refresh_token", "REFRESH_NOT_FOUND")
+    log.error("Register parse error: ${e.message} | body: ${body?.take(300)}")
+}
+              </stringProp>
+              <stringProp name="scriptLanguage">groovy</stringProp>
+            </JSR223PostProcessor>
+            <hashTree/>
+          </hashTree>
+        </hashTree>
+
+        <!-- ── TOKEN REFRESH CHECK ───────────────────────────────── -->
+        <JSR223PreProcessor guiclass="TestBeanGUI" testclass="JSR223PreProcessor" testname="Check Token Age" enabled="true">
+          <stringProp name="cacheKey">true</stringProp>
+          <stringProp name="filename"></stringProp>
+          <stringProp name="parameters"></stringProp>
+          <stringProp name="script">
+// Skip if not yet registered — fires before the first sampler on iteration 1.
+def accessToken = vars.get("access_token")
+if (!accessToken || accessToken == "TOKEN_NOT_FOUND") {
+    vars.put("needs_refresh", "false")
+    return
+}
+long tokenTime   = Long.parseLong(vars.get("token_time") ?: "0")
+long thresholdMs = Long.parseLong(props.get("token.refresh.threshold.minutes") ?: "13") * 60 * 1000L
+vars.put("needs_refresh", (System.currentTimeMillis() - tokenTime) > thresholdMs ? "true" : "false")
+          </stringProp>
+          <stringProp name="scriptLanguage">groovy</stringProp>
+        </JSR223PreProcessor>
+        <hashTree/>
+
+        <!-- ── IF: Refresh Token ─────────────────────────────────── -->
+        <IfController guiclass="IfControllerPanel" testclass="IfController" testname="Refresh Token If Needed" enabled="true">
+          <stringProp name="IfController.condition">"${needs_refresh}" == "true"</stringProp>
+          <boolProp name="IfController.evaluateAll">false</boolProp>
+          <boolProp name="IfController.useExpression">false</boolProp>
+        </IfController>
+        <hashTree>
+          <HTTPSamplerProxy guiclass="HttpTestSampleGui" testclass="HTTPSamplerProxy" testname="Refresh API" enabled="true">
+            <elementProp name="HTTPsampler.Arguments" elementType="Arguments">
+              <collectionProp name="Arguments.arguments"/>
+            </elementProp>
+            <stringProp name="HTTPSampler.path">${API_BASE_URL}/v1/register/refresh</stringProp>
+            <stringProp name="HTTPSampler.method">POST</stringProp>
+            <boolProp name="HTTPSampler.follow_redirects">true</boolProp>
+            <boolProp name="HTTPSampler.use_keepalive">true</boolProp>
+            <boolProp name="HTTPSampler.postBodyRaw">false</boolProp>
+          </HTTPSamplerProxy>
+          <hashTree>
+            <HeaderManager guiclass="HeaderPanel" testclass="HeaderManager" testname="Refresh Headers" enabled="true">
+              <collectionProp name="HeaderManager.headers">
+                <elementProp name="" elementType="Header">
+                  <stringProp name="Header.name">Content-Type</stringProp>
+                  <stringProp name="Header.value">application/json</stringProp>
+                </elementProp>
+                <elementProp name="" elementType="Header">
+                  <stringProp name="Header.name">Authorization</stringProp>
+                  <stringProp name="Header.value">Bearer ${refresh_token}</stringProp>
+                </elementProp>
+              </collectionProp>
+            </HeaderManager>
+            <hashTree/>
+            <JSR223PostProcessor guiclass="TestBeanGUI" testclass="JSR223PostProcessor" testname="Extract Refreshed Tokens" enabled="true">
+              <stringProp name="cacheKey">true</stringProp>
+              <stringProp name="filename"></stringProp>
+              <stringProp name="parameters"></stringProp>
+              <stringProp name="script">
+import groovy.json.JsonSlurper
+def body = prev.getResponseDataAsString()
+try {
+    def json = new JsonSlurper().parseText(body)
+    vars.put("access_token",  json.token        ?: "TOKEN_NOT_FOUND")
+    vars.put("refresh_token", json.refreshToken  ?: "REFRESH_NOT_FOUND")
+    vars.put("token_time",    String.valueOf(System.currentTimeMillis()))
+    vars.put("needs_refresh", "false")
+    log.info("Client ${vars.get('client_id')}: token refreshed.")
+} catch (Exception e) {
+    log.error("Refresh parse error: ${e.message} | body: ${body?.take(300)}")
+}
+              </stringProp>
+              <stringProp name="scriptLanguage">groovy</stringProp>
+            </JSR223PostProcessor>
+            <hashTree/>
+          </hashTree>
+        </hashTree>
+
+        <!-- ══════════════════════════════════════════════════════════
+             UPLOAD ALL CONNECTORS IN PARALLEL
+             - UUID injection: unique identity per iteration (re-zip in memory, ~5-10ms)
+             - Parallel:       all 3 connectors upload simultaneously
+             - EC2 ready:      zip.pool.path property switches path (local vs EC2)
+             Sub-results give per-connector breakdown in HTML report.
+        ══════════════════════════════════════════════════════════ -->
+        <JSR223Sampler guiclass="TestBeanGUI" testclass="JSR223Sampler" testname="Upload All Connectors" enabled="true">
+          <stringProp name="cacheKey">false</stringProp>
+          <stringProp name="filename"></stringProp>
+          <stringProp name="parameters"></stringProp>
+          <stringProp name="script">
+import groovy.json.JsonSlurper
+import org.apache.http.client.methods.HttpPut
+import org.apache.http.client.methods.HttpPost
+import org.apache.http.entity.ByteArrayEntity
+import org.apache.http.entity.StringEntity
+import org.apache.http.impl.client.CloseableHttpClient
+import org.apache.http.impl.client.HttpClients
+import org.apache.http.util.EntityUtils
+import org.apache.jmeter.samplers.SampleResult as SR
+import java.util.zip.*
+import java.util.concurrent.*
+
+// ── Guard: skip if token not yet set ────────────────────────────────────────
+def token = vars.get("access_token")
+if (!token || token == "TOKEN_NOT_FOUND") {
+    SampleResult.setSuccessful(false)
+    SampleResult.setResponseMessage("No token — skipping uploads this iteration")
+    return
+}
+
+// ── Thread-local HTTP client (created once, reused across all iterations) ───
+CloseableHttpClient http = vars.getObject("http_client")
+if (http == null) {
+    http = HttpClients.createDefault()
+    vars.putObject("http_client", http)
+}
+
+def baseUrl  = vars.get("API_BASE_URL")
+def actorId  = vars.get("actor_id")
+def zipRoot  = props.get("zip.pool.path", "zip-pool")
+def poolSize = Integer.parseInt(props.get("task.pool.size", "10"))
+
+// ── UUID injection ───────────────────────────────────────────────────────────
+// runSuffix is unique per thread x iteration — appended to every _perfNNNNN
+// identity field so each upload has records no other iteration has seen.
+// e.g. objectGUID "xxx_perf10000" becomes "xxx_perf10000_t2n1719823456789"
+def runSuffix = "_t${ctx.getThreadNum()}n${System.nanoTime()}"
+
+// Re-zip in memory with UUID-stamped identity fields (~5-10ms for 20-30 KB ZIPs)
+def injectUuid = { byte[] zipBytes ->
+    def bos  = new ByteArrayOutputStream()
+    def zout = new ZipOutputStream(bos)
+    def zin  = new ZipInputStream(new ByteArrayInputStream(zipBytes))
+    def entry
+    while ((entry = zin.getNextEntry()) != null) {
+        def buf = new ByteArrayOutputStream()
+        def tmp = new byte[8192]
+        int n
+        while ((n = zin.read(tmp)) != -1) buf.write(tmp, 0, n)
+        def content  = buf.toString("UTF-8")
+        def injected = content.replaceAll(/(_perf\d+)/, "\$1${runSuffix}")
+        def outBytes = injected.getBytes("UTF-8")
+        zout.putNextEntry(new ZipEntry(entry.name))
+        zout.write(outBytes)
+        zout.closeEntry()
+    }
+    zin.close()
+    zout.close()
+    bos.toByteArray()
+}
+
+// ── HTTP helpers (use the shared thread-local client) ───────────────────────
+def getPresignedUrl = { String taskId, String sourceId ->
+    def body = """{"taskId":"${taskId}","sourceId":"${sourceId}","contentType":"application/zip"}"""
+    def post = new HttpPost("${baseUrl}/task-api/v1/uploads/presigned-url")
+    post.setHeader("Content-Type",    "application/json")
+    post.setHeader("x-thor-actor-id", actorId)
+    post.setHeader("Authorization",   "Bearer ${token}")
+    post.setEntity(new StringEntity(body, "UTF-8"))
+    def resp   = http.execute(post)
+    def status = resp.getStatusLine().getStatusCode()
+    def rbody  = EntityUtils.toString(resp.getEntity())
+    EntityUtils.consume(resp.getEntity())
+    [status: status, body: rbody ?: ""]
+}
+
+def s3Put = { String uploadUrl, byte[] bytes ->
+    def put = new HttpPut(uploadUrl)
+    put.setEntity(new ByteArrayEntity(bytes))
+    put.setHeader("Content-Type", "application/zip")
+    def resp   = http.execute(put)
+    def status = resp.getStatusLine().getStatusCode()
+    EntityUtils.consume(resp.getEntity())
+    status
+}
+
+// ── Connector definitions ────────────────────────────────────────────────────
+def connectors = [
+    [name: "AD",       prefix: "AD_task_",  sourceKey: "AD_source_id",  dir: "AD"],
+    [name: "Windows",  prefix: "WIN_task_", sourceKey: "WIN_source_id", dir: "windows"],
+    [name: "CyberArc", prefix: "CA_task_",  sourceKey: "CA_source_id",  dir: "CyberArc"],
+]
+
+// ── Parallel upload: all 3 connectors at the same time ──────────────────────
+def pool    = Executors.newFixedThreadPool(3)
+def futures = connectors.collect { conn ->
+    pool.submit({
+        def t0 = System.currentTimeMillis()
+        try {
+            // Pick a random ZIP from the pool
+            def idx      = new Random().nextInt(poolSize) + 1
+            def padded   = String.format("%02d", idx)
+            def taskId   = vars.get("${conn.prefix}${idx}")
+            def sourceId = vars.get(conn.sourceKey)
+            def zipPath  = "${zipRoot}/${conn.dir}/task_${padded}.zip"
+
+            // 1. UUID injection — read ZIP, stamp identity fields, re-zip in memory
+            def rawBytes    = new File(zipPath).bytes
+            def uniqueBytes = injectUuid(rawBytes)
+
+            // 2. Get presigned URL from Thor Task API
+            def presigned = getPresignedUrl(taskId, sourceId)
+            if (presigned.status != 200) {
+                return [name: conn.name, ok: false, ms: System.currentTimeMillis() - t0,
+                        msg: "Presigned HTTP ${presigned.status} | ${presigned.body.take(200)}"]
+            }
+            def uploadUrl = new JsonSlurper().parseText(presigned.body)?.uploadUrl
+            if (!uploadUrl) {
+                return [name: conn.name, ok: false, ms: System.currentTimeMillis() - t0,
+                        msg: "No uploadUrl in response: ${presigned.body.take(200)}"]
+            }
+
+            // 3. S3 PUT — upload ZIP bytes directly (no disk write)
+            def s3Status = s3Put(uploadUrl, uniqueBytes)
+            [name: conn.name, ok: s3Status == 200, ms: System.currentTimeMillis() - t0,
+             msg: "S3 ${s3Status} | task_${padded}.zip | ${uniqueBytes.length}b | id=${runSuffix}"]
+
+        } catch (Exception e) {
+            [name: conn.name, ok: false, ms: System.currentTimeMillis() - t0,
+             msg: "Exception: ${e.getClass().simpleName}: ${e.message}"]
+        }
+    } as Callable)
+}
+pool.shutdown()
+
+// ── Collect results and build per-connector sub-results ─────────────────────
+def allOk   = true
+def summary = []
+futures.each { f ->
+    def r   = f.get(60, TimeUnit.SECONDS)
+    def sub = new SR()
+    sub.setSampleLabel("${r.name} Upload")
+    sub.setSuccessful(r.ok)
+    sub.setResponseMessage(r.msg)
+    sub.setEndTime(sub.getStartTime() + r.ms)
+    SampleResult.addSubResult(sub)
+    if (!r.ok) allOk = false
+    summary &lt;&lt; "[${r.name}] ${r.msg}"
+    log.info(summary.last())
+}
+
+SampleResult.setSuccessful(allOk)
+SampleResult.setResponseMessage(summary.join(" | "))
+          </stringProp>
+          <stringProp name="scriptLanguage">groovy</stringProp>
+        </JSR223Sampler>
+        <hashTree/>
+
+        <!-- ── Think time ─────────────────────────────────────────── -->
+        <UniformRandomTimer guiclass="UniformRandomTimerGui" testclass="UniformRandomTimer" testname="Think Time" enabled="true">
+          <stringProp name="ConstantTimer.delay">${__P(think.time.min.ms,500)}</stringProp>
+          <stringProp name="RandomTimer.range">${__P(think.time.max.ms,2000)}</stringProp>
+        </UniformRandomTimer>
+        <hashTree/>
+
+      </hashTree>
+
+      <!-- ═══════════════════════════════════════════════════════════
+           RESULT COLLECTOR
+           ═══════════════════════════════════════════════════════════ -->
+      <ResultCollector guiclass="SimpleDataWriter" testclass="ResultCollector" testname="Save Results" enabled="true">
+        <boolProp name="ResultCollector.error_logging">false</boolProp>
+        <objProp>
+          <name>saveConfig</name>
+          <value class="SampleSaveConfiguration">
+            <time>true</time>
+            <latency>true</latency>
+            <timestamp>true</timestamp>
+            <success>true</success>
+            <label>true</label>
+            <code>true</code>
+            <message>true</message>
+            <threadName>true</threadName>
+            <dataType>true</dataType>
+            <encoding>false</encoding>
+            <assertions>true</assertions>
+            <subresults>true</subresults>
+            <responseData>false</responseData>
+            <samplerData>false</samplerData>
+            <xml>false</xml>
+            <fieldNames>true</fieldNames>
+            <responseHeaders>false</responseHeaders>
+            <requestHeaders>false</requestHeaders>
+            <responseDataOnError>true</responseDataOnError>
+            <saveAssertionResultsFailureMessage>true</saveAssertionResultsFailureMessage>
+            <bytes>true</bytes>
+            <sentBytes>true</sentBytes>
+            <url>true</url>
+            <threadCounts>true</threadCounts>
+            <idleTime>true</idleTime>
+            <connectTime>true</connectTime>
+          </value>
+        </objProp>
+        <stringProp name="filename">${__P(result.file,results/result.jtl)}</stringProp>
+      </ResultCollector>
+      <hashTree/>
+
+    </hashTree>
+  </hashTree>
+</jmeterTestPlan>
