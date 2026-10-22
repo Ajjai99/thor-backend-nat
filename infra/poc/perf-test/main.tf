@@ -172,9 +172,15 @@ resource "aws_iam_role_policy" "jmeter_s3" {
         Action = "s3:GetObject"
         Resource = [
           "${aws_s3_bucket.results.arn}/tools/*",
-          "${aws_s3_bucket.results.arn}/runs/*/plan.jmx",
-          "${aws_s3_bucket.results.arn}/runs/*/config.properties",
+          "${aws_s3_bucket.results.arn}/runs/*/inputs/*",
         ]
+      },
+      {
+        # `aws s3 cp --recursive` lists the run's inputs/ prefix before downloading it.
+        Effect    = "Allow"
+        Action    = "s3:ListBucket"
+        Resource  = aws_s3_bucket.results.arn
+        Condition = { StringLike = { "s3:prefix" = "runs/*/inputs/*" } }
       },
       {
         Effect   = "Allow"

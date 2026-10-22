@@ -1,0 +1,632 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<jmeterTestPlan version="1.2" properties="5.0" jmeter="5.6.3">
+  <hashTree>
+    <TestPlan guiclass="TestPlanGui" testclass="TestPlan" testname="THOR Performance Test" enabled="true">
+      <stringProp name="TestPlan.comments">THOR Connector Upload Performance Test - 100 clients, 3 connectors, 5M records target</stringProp>
+      <boolProp name="TestPlan.functional_mode">false</boolProp>
+      <boolProp name="TestPlan.serialize_threadgroups">false</boolProp>
+      <elementProp name="TestPlan.arguments" elementType="Arguments">
+        <collectionProp name="Arguments.arguments"/>
+      </elementProp>
+    </TestPlan>
+    <hashTree>
+
+      <!-- ═══════════════════════════════════════════════════════════
+           USER DEFINED VARIABLES
+           ═══════════════════════════════════════════════════════════ -->
+      <Arguments guiclass="ArgumentsPanel" testclass="Arguments" testname="Config Variables" enabled="true">
+        <collectionProp name="Arguments.arguments">
+          <elementProp name="API_BASE_URL" elementType="Argument">
+            <stringProp name="Argument.name">API_BASE_URL</stringProp>
+            <stringProp name="Argument.value">${__P(api.base.url,https://z392f87e7k.execute-api.us-east-2.amazonaws.com/dev)}</stringProp>
+          </elementProp>
+          <elementProp name="THREAD_COUNT" elementType="Argument">
+            <stringProp name="Argument.name">THREAD_COUNT</stringProp>
+            <stringProp name="Argument.value">${__P(thread.count,100)}</stringProp>
+          </elementProp>
+          <elementProp name="RAMP_UP_SECONDS" elementType="Argument">
+            <stringProp name="Argument.name">RAMP_UP_SECONDS</stringProp>
+            <stringProp name="Argument.value">${__P(ramp.up.seconds,300)}</stringProp>
+          </elementProp>
+          <elementProp name="TEST_DURATION" elementType="Argument">
+            <stringProp name="Argument.name">TEST_DURATION</stringProp>
+            <stringProp name="Argument.value">${__P(test.duration.seconds,7200)}</stringProp>
+          </elementProp>
+          <elementProp name="ZIP_POOL_PATH" elementType="Argument">
+            <stringProp name="Argument.name">ZIP_POOL_PATH</stringProp>
+            <stringProp name="Argument.value">${__P(zip.pool.path,zip-pool)}</stringProp>
+          </elementProp>
+        </collectionProp>
+      </Arguments>
+      <hashTree/>
+
+      <!-- ═══════════════════════════════════════════════════════════
+           HTTP DEFAULT CONFIG
+           ═══════════════════════════════════════════════════════════ -->
+      <ConfigTestElement guiclass="HttpDefaultsGui" testclass="ConfigTestElement" testname="HTTP Defaults" enabled="true">
+        <elementProp name="HTTPsampler.Arguments" elementType="Arguments">
+          <collectionProp name="Arguments.arguments"/>
+        </elementProp>
+        <stringProp name="HTTPSampler.connect_timeout">30000</stringProp>
+        <stringProp name="HTTPSampler.response_timeout">120000</stringProp>
+      </ConfigTestElement>
+      <hashTree/>
+
+      <!-- ═══════════════════════════════════════════════════════════
+           MAIN THREAD GROUP
+           ═══════════════════════════════════════════════════════════ -->
+      <ThreadGroup guiclass="ThreadGroupGui" testclass="ThreadGroup" testname="THOR Clients" enabled="true">
+        <stringProp name="ThreadGroup.on_sample_error">continue</stringProp>
+        <elementProp name="ThreadGroup.main_controller" elementType="LoopController" guiclass="LoopControlPanel" testclass="LoopController">
+          <boolProp name="LoopController.continue_forever">true</boolProp>
+          <intProp name="LoopController.loops">-1</intProp>
+        </elementProp>
+        <stringProp name="ThreadGroup.num_threads">${THREAD_COUNT}</stringProp>
+        <stringProp name="ThreadGroup.ramp_time">${RAMP_UP_SECONDS}</stringProp>
+        <boolProp name="ThreadGroup.scheduler">true</boolProp>
+        <stringProp name="ThreadGroup.duration">${TEST_DURATION}</stringProp>
+        <stringProp name="ThreadGroup.delay">0</stringProp>
+      </ThreadGroup>
+      <hashTree>
+
+        <!-- ── Combined CSV: 1 row per thread ──────────────────── -->
+        <CSVDataSet guiclass="TestBeanGUI" testclass="CSVDataSet" testname="Test Data CSV" enabled="true">
+          <stringProp name="filename">config/test-data.csv</stringProp>
+          <stringProp name="variableNames">client_id,api_key,actor_id,AD_task_1,AD_task_2,AD_task_3,AD_task_4,AD_task_5,AD_task_6,AD_task_7,AD_task_8,AD_task_9,AD_task_10,AD_source_id,WIN_task_1,WIN_task_2,WIN_task_3,WIN_task_4,WIN_task_5,WIN_task_6,WIN_task_7,WIN_task_8,WIN_task_9,WIN_task_10,WIN_source_id,CA_task_1,CA_task_2,CA_task_3,CA_task_4,CA_task_5,CA_task_6,CA_task_7,CA_task_8,CA_task_9,CA_task_10,CA_source_id</stringProp>
+          <stringProp name="delimiter">,</stringProp>
+          <boolProp name="quotedData">false</boolProp>
+          <boolProp name="recycle">true</boolProp>
+          <boolProp name="stopThread">false</boolProp>
+          <stringProp name="shareMode">shareMode.thread</stringProp>
+          <boolProp name="ignoreFirstLine">true</boolProp>
+        </CSVDataSet>
+        <hashTree/>
+
+        <!-- ── ONCE: Register ────────────────────────────────────── -->
+        <OnceOnlyController guiclass="OnceOnlyControllerGui" testclass="OnceOnlyController" testname="Register Once" enabled="true"/>
+        <hashTree>
+          <HTTPSamplerProxy guiclass="HttpTestSampleGui" testclass="HTTPSamplerProxy" testname="Register API" enabled="true">
+            <elementProp name="HTTPsampler.Arguments" elementType="Arguments">
+              <collectionProp name="Arguments.arguments">
+                <elementProp name="" elementType="HTTPArgument">
+                  <boolProp name="HTTPArgument.always_encode">false</boolProp>
+                  <stringProp name="Argument.value">{"roleType":"connector"}</stringProp>
+                  <stringProp name="Argument.metadata">=</stringProp>
+                  <boolProp name="HTTPArgument.use_equals">true</boolProp>
+                  <stringProp name="Argument.name"></stringProp>
+                </elementProp>
+              </collectionProp>
+            </elementProp>
+            <stringProp name="HTTPSampler.path">${API_BASE_URL}/v1/register</stringProp>
+            <stringProp name="HTTPSampler.method">POST</stringProp>
+            <boolProp name="HTTPSampler.follow_redirects">true</boolProp>
+            <boolProp name="HTTPSampler.use_keepalive">true</boolProp>
+            <boolProp name="HTTPSampler.postBodyRaw">true</boolProp>
+          </HTTPSamplerProxy>
+          <hashTree>
+            <HeaderManager guiclass="HeaderPanel" testclass="HeaderManager" testname="Register Headers" enabled="true">
+              <collectionProp name="HeaderManager.headers">
+                <elementProp name="" elementType="Header">
+                  <stringProp name="Header.name">x-task-api-key</stringProp>
+                  <stringProp name="Header.value">${api_key}</stringProp>
+                </elementProp>
+                <elementProp name="" elementType="Header">
+                  <stringProp name="Header.name">Content-Type</stringProp>
+                  <stringProp name="Header.value">application/json</stringProp>
+                </elementProp>
+              </collectionProp>
+            </HeaderManager>
+            <hashTree/>
+            <JSR223PostProcessor guiclass="TestBeanGUI" testclass="JSR223PostProcessor" testname="Extract Register Tokens" enabled="true">
+              <stringProp name="cacheKey">true</stringProp>
+              <stringProp name="filename"></stringProp>
+              <stringProp name="parameters"></stringProp>
+              <stringProp name="script">
+import groovy.json.JsonSlurper
+def body = prev.getResponseDataAsString()
+try {
+    def json = new JsonSlurper().parseText(body)
+    vars.put("access_token",  json.token        ?: "TOKEN_NOT_FOUND")
+    vars.put("refresh_token", json.refreshToken  ?: "REFRESH_NOT_FOUND")
+    vars.put("token_time",    String.valueOf(System.currentTimeMillis()))
+    log.info("Client ${vars.get('client_id')} registered. Token OK.")
+} catch (Exception e) {
+    vars.put("access_token",  "TOKEN_NOT_FOUND")
+    vars.put("refresh_token", "REFRESH_NOT_FOUND")
+    log.error("Register parse error: ${e.message} | body: ${body?.take(300)}")
+}
+              </stringProp>
+              <stringProp name="scriptLanguage">groovy</stringProp>
+            </JSR223PostProcessor>
+            <hashTree/>
+          </hashTree>
+        </hashTree>
+
+        <!-- ── TOKEN REFRESH CHECK ───────────────────────────────── -->
+        <JSR223PreProcessor guiclass="TestBeanGUI" testclass="JSR223PreProcessor" testname="Check Token Age" enabled="true">
+          <stringProp name="cacheKey">true</stringProp>
+          <stringProp name="filename"></stringProp>
+          <stringProp name="parameters"></stringProp>
+          <stringProp name="script">
+// Skip if not yet registered — OnceOnlyController runs register first, but this pre-processor
+// fires before the first sampler including the register sampler on iteration 1.
+def accessToken = vars.get("access_token")
+if (!accessToken || accessToken == "TOKEN_NOT_FOUND") {
+    vars.put("needs_refresh", "false")
+    return
+}
+long tokenTime   = Long.parseLong(vars.get("token_time") ?: "0")
+long thresholdMs = Long.parseLong(props.get("token.refresh.threshold.minutes") ?: "13") * 60 * 1000L
+vars.put("needs_refresh", (System.currentTimeMillis() - tokenTime) > thresholdMs ? "true" : "false")
+          </stringProp>
+          <stringProp name="scriptLanguage">groovy</stringProp>
+        </JSR223PreProcessor>
+        <hashTree/>
+
+        <!-- ── IF: Refresh Token ─────────────────────────────────── -->
+        <IfController guiclass="IfControllerPanel" testclass="IfController" testname="Refresh Token If Needed" enabled="true">
+          <stringProp name="IfController.condition">"${needs_refresh}" == "true"</stringProp>
+          <boolProp name="IfController.evaluateAll">false</boolProp>
+          <boolProp name="IfController.useExpression">false</boolProp>
+        </IfController>
+        <hashTree>
+          <HTTPSamplerProxy guiclass="HttpTestSampleGui" testclass="HTTPSamplerProxy" testname="Refresh API" enabled="true">
+            <elementProp name="HTTPsampler.Arguments" elementType="Arguments">
+              <collectionProp name="Arguments.arguments"/>
+            </elementProp>
+            <stringProp name="HTTPSampler.path">${API_BASE_URL}/v1/register/refresh</stringProp>
+            <stringProp name="HTTPSampler.method">POST</stringProp>
+            <boolProp name="HTTPSampler.follow_redirects">true</boolProp>
+            <boolProp name="HTTPSampler.use_keepalive">true</boolProp>
+            <boolProp name="HTTPSampler.postBodyRaw">false</boolProp>
+          </HTTPSamplerProxy>
+          <hashTree>
+            <HeaderManager guiclass="HeaderPanel" testclass="HeaderManager" testname="Refresh Headers" enabled="true">
+              <collectionProp name="HeaderManager.headers">
+                <elementProp name="" elementType="Header">
+                  <stringProp name="Header.name">Content-Type</stringProp>
+                  <stringProp name="Header.value">application/json</stringProp>
+                </elementProp>
+                <elementProp name="" elementType="Header">
+                  <stringProp name="Header.name">Authorization</stringProp>
+                  <stringProp name="Header.value">Bearer ${refresh_token}</stringProp>
+                </elementProp>
+              </collectionProp>
+            </HeaderManager>
+            <hashTree/>
+            <JSR223PostProcessor guiclass="TestBeanGUI" testclass="JSR223PostProcessor" testname="Extract Refreshed Tokens" enabled="true">
+              <stringProp name="cacheKey">true</stringProp>
+              <stringProp name="filename"></stringProp>
+              <stringProp name="parameters"></stringProp>
+              <stringProp name="script">
+import groovy.json.JsonSlurper
+def body = prev.getResponseDataAsString()
+try {
+    def json = new JsonSlurper().parseText(body)
+    vars.put("access_token",  json.token        ?: "TOKEN_NOT_FOUND")
+    vars.put("refresh_token", json.refreshToken  ?: "REFRESH_NOT_FOUND")
+    vars.put("token_time",    String.valueOf(System.currentTimeMillis()))
+    vars.put("needs_refresh", "false")
+    log.info("Client ${vars.get('client_id')}: token refreshed.")
+} catch (Exception e) {
+    log.error("Refresh parse error: ${e.message} | body: ${body?.take(300)}")
+}
+              </stringProp>
+              <stringProp name="scriptLanguage">groovy</stringProp>
+            </JSR223PostProcessor>
+            <hashTree/>
+          </hashTree>
+        </hashTree>
+
+        <!-- ══════════════════════════════════════════════════════════
+             CONNECTOR: AD
+        ══════════════════════════════════════════════════════════ -->
+        <HTTPSamplerProxy guiclass="HttpTestSampleGui" testclass="HTTPSamplerProxy" testname="AD - Get Presigned URL" enabled="true">
+          <elementProp name="HTTPsampler.Arguments" elementType="Arguments">
+            <collectionProp name="Arguments.arguments">
+              <elementProp name="" elementType="HTTPArgument">
+                <boolProp name="HTTPArgument.always_encode">false</boolProp>
+                <stringProp name="Argument.value">{"taskId":"${current_task_id}","sourceId":"${current_source_id}","contentType":"application/zip"}</stringProp>
+                <stringProp name="Argument.metadata">=</stringProp>
+                <boolProp name="HTTPArgument.use_equals">true</boolProp>
+                <stringProp name="Argument.name"></stringProp>
+              </elementProp>
+            </collectionProp>
+          </elementProp>
+          <stringProp name="HTTPSampler.path">${API_BASE_URL}/task-api/v1/uploads/presigned-url</stringProp>
+          <stringProp name="HTTPSampler.method">POST</stringProp>
+          <boolProp name="HTTPSampler.follow_redirects">true</boolProp>
+          <boolProp name="HTTPSampler.use_keepalive">true</boolProp>
+          <boolProp name="HTTPSampler.postBodyRaw">true</boolProp>
+        </HTTPSamplerProxy>
+        <hashTree>
+          <JSR223PreProcessor guiclass="TestBeanGUI" testclass="JSR223PreProcessor" testname="Pick AD Task" enabled="true">
+            <stringProp name="cacheKey">true</stringProp>
+            <stringProp name="filename"></stringProp>
+            <stringProp name="parameters"></stringProp>
+            <stringProp name="script">
+def idx    = new Random().nextInt(10) + 1
+def padded = String.format("%02d", idx)
+vars.put("current_task_id",   vars.get("AD_task_${idx}"))
+vars.put("current_source_id", vars.get("AD_source_id"))
+vars.put("current_zip_path",  "${ZIP_POOL_PATH}/AD/task_${padded}.zip")
+            </stringProp>
+            <stringProp name="scriptLanguage">groovy</stringProp>
+          </JSR223PreProcessor>
+          <hashTree/>
+          <HeaderManager guiclass="HeaderPanel" testclass="HeaderManager" testname="Upload API Headers" enabled="true">
+            <collectionProp name="HeaderManager.headers">
+              <elementProp name="" elementType="Header">
+                <stringProp name="Header.name">Content-Type</stringProp>
+                <stringProp name="Header.value">application/json</stringProp>
+              </elementProp>
+              <elementProp name="" elementType="Header">
+                <stringProp name="Header.name">x-thor-actor-id</stringProp>
+                <stringProp name="Header.value">${actor_id}</stringProp>
+              </elementProp>
+              <elementProp name="" elementType="Header">
+                <stringProp name="Header.name">Authorization</stringProp>
+                <stringProp name="Header.value">Bearer ${access_token}</stringProp>
+              </elementProp>
+            </collectionProp>
+          </HeaderManager>
+          <hashTree/>
+          <!-- Extract uploadUrl directly — no URL parsing needed -->
+          <JSR223PostProcessor guiclass="TestBeanGUI" testclass="JSR223PostProcessor" testname="Extract AD uploadUrl" enabled="true">
+            <stringProp name="cacheKey">true</stringProp>
+            <stringProp name="filename"></stringProp>
+            <stringProp name="parameters"></stringProp>
+            <stringProp name="script">
+import groovy.json.JsonSlurper
+def body = prev.getResponseDataAsString()
+try {
+    def json = new JsonSlurper().parseText(body)
+    vars.put("upload_url", json.uploadUrl ?: "URL_NOT_FOUND")
+} catch (Exception e) {
+    vars.put("upload_url", "URL_NOT_FOUND")
+    log.error("AD uploadUrl parse error: ${e.message} | body: ${body?.take(300)}")
+}
+            </stringProp>
+            <stringProp name="scriptLanguage">groovy</stringProp>
+          </JSR223PostProcessor>
+          <hashTree/>
+        </hashTree>
+
+        <!-- S3 PUT: use uploadUrl directly, thread-local HttpClient (created once per thread) -->
+        <JSR223Sampler guiclass="TestBeanGUI" testclass="JSR223Sampler" testname="AD - S3 PUT Upload" enabled="true">
+          <stringProp name="cacheKey">true</stringProp>
+          <stringProp name="filename"></stringProp>
+          <stringProp name="parameters"></stringProp>
+          <stringProp name="script">
+import org.apache.http.client.methods.HttpPut
+import org.apache.http.entity.FileEntity
+import org.apache.http.impl.client.CloseableHttpClient
+import org.apache.http.impl.client.HttpClients
+import java.io.File
+
+def uploadUrl = vars.get("upload_url")
+def zipFile   = new File(vars.get("current_zip_path"))
+
+if (!uploadUrl || uploadUrl == "URL_NOT_FOUND") {
+    SampleResult.setSuccessful(false)
+    SampleResult.setResponseMessage("uploadUrl not found — skipping S3 PUT")
+    return
+}
+if (!zipFile.exists()) {
+    SampleResult.setSuccessful(false)
+    SampleResult.setResponseMessage("ZIP not found: ${zipFile.path}")
+    return
+}
+
+// Reuse the thread-local HttpClient — created once, shared across all iterations for this thread
+CloseableHttpClient client = vars.getObject("http_client")
+if (client == null) {
+    client = HttpClients.createDefault()
+    vars.putObject("http_client", client)
+}
+
+def put = new HttpPut(uploadUrl)
+put.setEntity(new FileEntity(zipFile, org.apache.http.entity.ContentType.create("application/zip")))
+put.setHeader("Content-Type", "application/zip")
+
+def response = client.execute(put)
+def status = response.getStatusLine().getStatusCode()
+SampleResult.setResponseCode(String.valueOf(status))
+SampleResult.setSuccessful(status == 200)
+SampleResult.setResponseMessage("S3 PUT ${status} | ${zipFile.name} | ${zipFile.length()}b")
+org.apache.http.util.EntityUtils.consume(response.getEntity())
+          </stringProp>
+          <stringProp name="scriptLanguage">groovy</stringProp>
+        </JSR223Sampler>
+        <hashTree/>
+
+        <!-- ══════════════════════════════════════════════════════════
+             CONNECTOR: Windows
+        ══════════════════════════════════════════════════════════ -->
+        <HTTPSamplerProxy guiclass="HttpTestSampleGui" testclass="HTTPSamplerProxy" testname="Windows - Get Presigned URL" enabled="true">
+          <elementProp name="HTTPsampler.Arguments" elementType="Arguments">
+            <collectionProp name="Arguments.arguments">
+              <elementProp name="" elementType="HTTPArgument">
+                <boolProp name="HTTPArgument.always_encode">false</boolProp>
+                <stringProp name="Argument.value">{"taskId":"${current_task_id}","sourceId":"${current_source_id}","contentType":"application/zip"}</stringProp>
+                <stringProp name="Argument.metadata">=</stringProp>
+                <boolProp name="HTTPArgument.use_equals">true</boolProp>
+                <stringProp name="Argument.name"></stringProp>
+              </elementProp>
+            </collectionProp>
+          </elementProp>
+          <stringProp name="HTTPSampler.path">${API_BASE_URL}/task-api/v1/uploads/presigned-url</stringProp>
+          <stringProp name="HTTPSampler.method">POST</stringProp>
+          <boolProp name="HTTPSampler.follow_redirects">true</boolProp>
+          <boolProp name="HTTPSampler.use_keepalive">true</boolProp>
+          <boolProp name="HTTPSampler.postBodyRaw">true</boolProp>
+        </HTTPSamplerProxy>
+        <hashTree>
+          <JSR223PreProcessor guiclass="TestBeanGUI" testclass="JSR223PreProcessor" testname="Pick Windows Task" enabled="true">
+            <stringProp name="cacheKey">true</stringProp>
+            <stringProp name="filename"></stringProp>
+            <stringProp name="parameters"></stringProp>
+            <stringProp name="script">
+def idx    = new Random().nextInt(10) + 1
+def padded = String.format("%02d", idx)
+vars.put("current_task_id",   vars.get("WIN_task_${idx}"))
+vars.put("current_source_id", vars.get("WIN_source_id"))
+vars.put("current_zip_path",  "${ZIP_POOL_PATH}/windows/task_${padded}.zip")
+            </stringProp>
+            <stringProp name="scriptLanguage">groovy</stringProp>
+          </JSR223PreProcessor>
+          <hashTree/>
+          <HeaderManager guiclass="HeaderPanel" testclass="HeaderManager" testname="Upload API Headers" enabled="true">
+            <collectionProp name="HeaderManager.headers">
+              <elementProp name="" elementType="Header">
+                <stringProp name="Header.name">Content-Type</stringProp>
+                <stringProp name="Header.value">application/json</stringProp>
+              </elementProp>
+              <elementProp name="" elementType="Header">
+                <stringProp name="Header.name">x-thor-actor-id</stringProp>
+                <stringProp name="Header.value">${actor_id}</stringProp>
+              </elementProp>
+              <elementProp name="" elementType="Header">
+                <stringProp name="Header.name">Authorization</stringProp>
+                <stringProp name="Header.value">Bearer ${access_token}</stringProp>
+              </elementProp>
+            </collectionProp>
+          </HeaderManager>
+          <hashTree/>
+          <JSR223PostProcessor guiclass="TestBeanGUI" testclass="JSR223PostProcessor" testname="Extract Windows uploadUrl" enabled="true">
+            <stringProp name="cacheKey">true</stringProp>
+            <stringProp name="filename"></stringProp>
+            <stringProp name="parameters"></stringProp>
+            <stringProp name="script">
+import groovy.json.JsonSlurper
+def body = prev.getResponseDataAsString()
+try {
+    def json = new JsonSlurper().parseText(body)
+    vars.put("upload_url", json.uploadUrl ?: "URL_NOT_FOUND")
+} catch (Exception e) {
+    vars.put("upload_url", "URL_NOT_FOUND")
+    log.error("Windows uploadUrl parse error: ${e.message} | body: ${body?.take(300)}")
+}
+            </stringProp>
+            <stringProp name="scriptLanguage">groovy</stringProp>
+          </JSR223PostProcessor>
+          <hashTree/>
+        </hashTree>
+
+        <JSR223Sampler guiclass="TestBeanGUI" testclass="JSR223Sampler" testname="Windows - S3 PUT Upload" enabled="true">
+          <stringProp name="cacheKey">true</stringProp>
+          <stringProp name="filename"></stringProp>
+          <stringProp name="parameters"></stringProp>
+          <stringProp name="script">
+import org.apache.http.client.methods.HttpPut
+import org.apache.http.entity.FileEntity
+import org.apache.http.impl.client.CloseableHttpClient
+import org.apache.http.impl.client.HttpClients
+import java.io.File
+
+def uploadUrl = vars.get("upload_url")
+def zipFile   = new File(vars.get("current_zip_path"))
+
+if (!uploadUrl || uploadUrl == "URL_NOT_FOUND") {
+    SampleResult.setSuccessful(false)
+    SampleResult.setResponseMessage("uploadUrl not found — skipping S3 PUT")
+    return
+}
+if (!zipFile.exists()) {
+    SampleResult.setSuccessful(false)
+    SampleResult.setResponseMessage("ZIP not found: ${zipFile.path}")
+    return
+}
+
+CloseableHttpClient client = vars.getObject("http_client")
+if (client == null) {
+    client = HttpClients.createDefault()
+    vars.putObject("http_client", client)
+}
+
+def put = new HttpPut(uploadUrl)
+put.setEntity(new FileEntity(zipFile, org.apache.http.entity.ContentType.create("application/zip")))
+put.setHeader("Content-Type", "application/zip")
+
+def response = client.execute(put)
+def status = response.getStatusLine().getStatusCode()
+SampleResult.setResponseCode(String.valueOf(status))
+SampleResult.setSuccessful(status == 200)
+SampleResult.setResponseMessage("S3 PUT ${status} | ${zipFile.name} | ${zipFile.length()}b")
+org.apache.http.util.EntityUtils.consume(response.getEntity())
+          </stringProp>
+          <stringProp name="scriptLanguage">groovy</stringProp>
+        </JSR223Sampler>
+        <hashTree/>
+
+        <!-- ══════════════════════════════════════════════════════════
+             CONNECTOR: CyberArc
+        ══════════════════════════════════════════════════════════ -->
+        <HTTPSamplerProxy guiclass="HttpTestSampleGui" testclass="HTTPSamplerProxy" testname="CyberArc - Get Presigned URL" enabled="true">
+          <elementProp name="HTTPsampler.Arguments" elementType="Arguments">
+            <collectionProp name="Arguments.arguments">
+              <elementProp name="" elementType="HTTPArgument">
+                <boolProp name="HTTPArgument.always_encode">false</boolProp>
+                <stringProp name="Argument.value">{"taskId":"${current_task_id}","sourceId":"${current_source_id}","contentType":"application/zip"}</stringProp>
+                <stringProp name="Argument.metadata">=</stringProp>
+                <boolProp name="HTTPArgument.use_equals">true</boolProp>
+                <stringProp name="Argument.name"></stringProp>
+              </elementProp>
+            </collectionProp>
+          </elementProp>
+          <stringProp name="HTTPSampler.path">${API_BASE_URL}/task-api/v1/uploads/presigned-url</stringProp>
+          <stringProp name="HTTPSampler.method">POST</stringProp>
+          <boolProp name="HTTPSampler.follow_redirects">true</boolProp>
+          <boolProp name="HTTPSampler.use_keepalive">true</boolProp>
+          <boolProp name="HTTPSampler.postBodyRaw">true</boolProp>
+        </HTTPSamplerProxy>
+        <hashTree>
+          <JSR223PreProcessor guiclass="TestBeanGUI" testclass="JSR223PreProcessor" testname="Pick CyberArc Task" enabled="true">
+            <stringProp name="cacheKey">true</stringProp>
+            <stringProp name="filename"></stringProp>
+            <stringProp name="parameters"></stringProp>
+            <stringProp name="script">
+def idx    = new Random().nextInt(10) + 1
+def padded = String.format("%02d", idx)
+vars.put("current_task_id",   vars.get("CA_task_${idx}"))
+vars.put("current_source_id", vars.get("CA_source_id"))
+vars.put("current_zip_path",  "${ZIP_POOL_PATH}/CyberArc/task_${padded}.zip")
+            </stringProp>
+            <stringProp name="scriptLanguage">groovy</stringProp>
+          </JSR223PreProcessor>
+          <hashTree/>
+          <HeaderManager guiclass="HeaderPanel" testclass="HeaderManager" testname="Upload API Headers" enabled="true">
+            <collectionProp name="HeaderManager.headers">
+              <elementProp name="" elementType="Header">
+                <stringProp name="Header.name">Content-Type</stringProp>
+                <stringProp name="Header.value">application/json</stringProp>
+              </elementProp>
+              <elementProp name="" elementType="Header">
+                <stringProp name="Header.name">x-thor-actor-id</stringProp>
+                <stringProp name="Header.value">${actor_id}</stringProp>
+              </elementProp>
+              <elementProp name="" elementType="Header">
+                <stringProp name="Header.name">Authorization</stringProp>
+                <stringProp name="Header.value">Bearer ${access_token}</stringProp>
+              </elementProp>
+            </collectionProp>
+          </HeaderManager>
+          <hashTree/>
+          <JSR223PostProcessor guiclass="TestBeanGUI" testclass="JSR223PostProcessor" testname="Extract CyberArc uploadUrl" enabled="true">
+            <stringProp name="cacheKey">true</stringProp>
+            <stringProp name="filename"></stringProp>
+            <stringProp name="parameters"></stringProp>
+            <stringProp name="script">
+import groovy.json.JsonSlurper
+def body = prev.getResponseDataAsString()
+try {
+    def json = new JsonSlurper().parseText(body)
+    vars.put("upload_url", json.uploadUrl ?: "URL_NOT_FOUND")
+} catch (Exception e) {
+    vars.put("upload_url", "URL_NOT_FOUND")
+    log.error("CyberArc uploadUrl parse error: ${e.message} | body: ${body?.take(300)}")
+}
+            </stringProp>
+            <stringProp name="scriptLanguage">groovy</stringProp>
+          </JSR223PostProcessor>
+          <hashTree/>
+        </hashTree>
+
+        <JSR223Sampler guiclass="TestBeanGUI" testclass="JSR223Sampler" testname="CyberArc - S3 PUT Upload" enabled="true">
+          <stringProp name="cacheKey">true</stringProp>
+          <stringProp name="filename"></stringProp>
+          <stringProp name="parameters"></stringProp>
+          <stringProp name="script">
+import org.apache.http.client.methods.HttpPut
+import org.apache.http.entity.FileEntity
+import org.apache.http.impl.client.CloseableHttpClient
+import org.apache.http.impl.client.HttpClients
+import java.io.File
+
+def uploadUrl = vars.get("upload_url")
+def zipFile   = new File(vars.get("current_zip_path"))
+
+if (!uploadUrl || uploadUrl == "URL_NOT_FOUND") {
+    SampleResult.setSuccessful(false)
+    SampleResult.setResponseMessage("uploadUrl not found — skipping S3 PUT")
+    return
+}
+if (!zipFile.exists()) {
+    SampleResult.setSuccessful(false)
+    SampleResult.setResponseMessage("ZIP not found: ${zipFile.path}")
+    return
+}
+
+CloseableHttpClient client = vars.getObject("http_client")
+if (client == null) {
+    client = HttpClients.createDefault()
+    vars.putObject("http_client", client)
+}
+
+def put = new HttpPut(uploadUrl)
+put.setEntity(new FileEntity(zipFile, org.apache.http.entity.ContentType.create("application/zip")))
+put.setHeader("Content-Type", "application/zip")
+
+def response = client.execute(put)
+def status = response.getStatusLine().getStatusCode()
+SampleResult.setResponseCode(String.valueOf(status))
+SampleResult.setSuccessful(status == 200)
+SampleResult.setResponseMessage("S3 PUT ${status} | ${zipFile.name} | ${zipFile.length()}b")
+org.apache.http.util.EntityUtils.consume(response.getEntity())
+          </stringProp>
+          <stringProp name="scriptLanguage">groovy</stringProp>
+        </JSR223Sampler>
+        <hashTree/>
+
+        <!-- ── Think time ─────────────────────────────────────────── -->
+        <UniformRandomTimer guiclass="UniformRandomTimerGui" testclass="UniformRandomTimer" testname="Think Time" enabled="true">
+          <stringProp name="ConstantTimer.delay">${__P(think.time.min.ms,500)}</stringProp>
+          <stringProp name="RandomTimer.range">${__P(think.time.max.ms,2000)}</stringProp>
+        </UniformRandomTimer>
+        <hashTree/>
+
+      </hashTree>
+
+      <!-- ═══════════════════════════════════════════════════════════
+           RESULT COLLECTOR
+           ═══════════════════════════════════════════════════════════ -->
+      <ResultCollector guiclass="SimpleDataWriter" testclass="ResultCollector" testname="Save Results" enabled="true">
+        <boolProp name="ResultCollector.error_logging">false</boolProp>
+        <objProp>
+          <name>saveConfig</name>
+          <value class="SampleSaveConfiguration">
+            <time>true</time>
+            <latency>true</latency>
+            <timestamp>true</timestamp>
+            <success>true</success>
+            <label>true</label>
+            <code>true</code>
+            <message>true</message>
+            <threadName>true</threadName>
+            <dataType>true</dataType>
+            <encoding>false</encoding>
+            <assertions>true</assertions>
+            <subresults>true</subresults>
+            <responseData>false</responseData>
+            <samplerData>false</samplerData>
+            <xml>false</xml>
+            <fieldNames>true</fieldNames>
+            <responseHeaders>false</responseHeaders>
+            <requestHeaders>false</requestHeaders>
+            <responseDataOnError>true</responseDataOnError>
+            <saveAssertionResultsFailureMessage>true</saveAssertionResultsFailureMessage>
+            <bytes>true</bytes>
+            <sentBytes>true</sentBytes>
+            <url>true</url>
+            <threadCounts>true</threadCounts>
+            <idleTime>true</idleTime>
+            <connectTime>true</connectTime>
+          </value>
+        </objProp>
+        <stringProp name="filename">${__P(result.file,results/result.jtl)}</stringProp>
+      </ResultCollector>
+      <hashTree/>
+
+    </hashTree>
+  </hashTree>
+</jmeterTestPlan>

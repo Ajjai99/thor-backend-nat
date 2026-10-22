@@ -1,0 +1,7 @@
+connector,task_index,file,target,actual_kb,records
+AD,1,task_01.zip,5-20 recs,4.4,8
+AD,2,task_02.zip,5-20 recs,5.9,13
+windows,1,task_01.zip,5-20 recs,2.8,12
+windows,2,task_02.zip,5-20 recs,4.8,8
+CyberArc,1,task_01.zip,5-20 recs,4.1,7
+CyberArc,2,task_02.zip,5-20 recs,4.1,6
