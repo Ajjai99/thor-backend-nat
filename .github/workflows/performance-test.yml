@@ -47,7 +47,9 @@ env:
   NAME_PREFIX: thor-prod-perf # matches infra/poc/perf-test (environment = "prod")
   JMETER_VERSION: "5.6.3"
   JMETER_HEAP: "-Xms4g -Xmx8g -XX:MaxMetaspaceSize=256m" # QA requirement; fits t3.xlarge's 16 GiB
-  # Test inputs sent to the instance (and nothing else from perf-tests/)
+  # Test inputs sent to the instance (and nothing else from perf-tests/), all paths inside perf-tests/.
+  # The instance runs RUN_SCRIPT, which refers to the plan and config by name: rename them there too.
+  RUN_SCRIPT: perf-tests/run-dryrun.sh
   TEST_PLAN: perf-tests/test-plan_smoke.jmx
   CONFIG_FILE: perf-tests/config/config.dryrun.properties
   TEST_DATA: perf-tests/config/test-data.csv
@@ -84,6 +86,7 @@ jobs:
           identity=$(aws sts get-caller-identity --query Arn --output text)
 
           echo "▶ [1/7] Performance test settings"
+          echo "  Run script     : ${RUN_SCRIPT}"
           echo "  Test plan      : ${TEST_PLAN}"
           echo "  Config file    : ${CONFIG_FILE}"
           echo "  Test data      : ${TEST_DATA} + ${ZIP_POOL}/"
@@ -164,11 +167,13 @@ jobs:
           run_id="$(date -u +%Y%m%dT%H%M%SZ)-${GITHUB_RUN_ID}"
           inputs_uri="s3://${BUCKET}/runs/${run_id}/inputs"
 
-          echo "▶ [3/7] Uploading the test plan, config, test data and zip-pool"
+          files=("$RUN_SCRIPT" "$TEST_PLAN" "$CONFIG_FILE" "$TEST_DATA")
+
+          echo "▶ [3/7] Uploading the run script, test plan, config, test data and zip-pool"
           echo "  Run ID: ${run_id} (all of this run's files go under s3://${BUCKET}/runs/${run_id}/)"
 
-          # --- The plan needs all four; fail here rather than after the instance boots ---
-          for f in "$TEST_PLAN" "$CONFIG_FILE" "$TEST_DATA"; do
+          # --- The script and everything it uses must exist; fail here rather than after the instance boots ---
+          for f in "${files[@]}"; do
             if [[ ! -f "$f" ]]; then
               echo "::error::${f} is missing from the repo"
               exit 1
@@ -180,13 +185,15 @@ jobs:
             exit 1
           fi
 
-          # --- Upload in the layout the plan expects (config/test-data.csv, zip-pool/<connector>/task_NN.zip) ---
-          aws s3 cp --only-show-errors "$TEST_PLAN"   "${inputs_uri}/plan.jmx"
-          aws s3 cp --only-show-errors "$CONFIG_FILE" "${inputs_uri}/config.properties"
-          aws s3 cp --only-show-errors "$TEST_DATA"   "${inputs_uri}/config/test-data.csv"
+          # --- Upload keeping each file's path inside perf-tests/: the run script refers to them by name ---
+          for f in "${files[@]}"; do
+            aws s3 cp --only-show-errors "$f" "${inputs_uri}/${f#perf-tests/}"
+            echo "  ${f} → ${inputs_uri}/${f#perf-tests/}"
+          done
           aws s3 cp --only-show-errors --recursive --exclude '*' --include '*.zip' \
-            "$ZIP_POOL" "${inputs_uri}/zip-pool/"
-          echo "✔ Uploaded to ${inputs_uri}/: plan.jmx, config.properties, config/test-data.csv, ${zip_count} ZIPs"
+            "$ZIP_POOL" "${inputs_uri}/${ZIP_POOL#perf-tests/}/"
+          echo "  ${ZIP_POOL}/ → ${inputs_uri}/${ZIP_POOL#perf-tests/}/ (${zip_count} ZIPs)"
+          echo "✔ Test inputs uploaded."
 
           echo "run_id=${run_id}" >> "$GITHUB_OUTPUT"
 
@@ -204,8 +211,8 @@ jobs:
           echo "  Building the instance start-up script: run settings + perf-tests/run-on-instance.sh"
           {
             echo '#!/bin/bash'
-            printf 'BUCKET=%q RUN_ID=%q JMETER_VERSION=%q JMETER_HEAP=%q MAX_MINUTES=%q\n' \
-              "$BUCKET" "$RUN_ID" "$JMETER_VERSION" "$JMETER_HEAP" "$MAX_MINUTES"
+            printf 'BUCKET=%q RUN_ID=%q JMETER_VERSION=%q JMETER_HEAP=%q MAX_MINUTES=%q RUN_SCRIPT=%q\n' \
+              "$BUCKET" "$RUN_ID" "$JMETER_VERSION" "$JMETER_HEAP" "$MAX_MINUTES" "${RUN_SCRIPT#perf-tests/}"
             printf 'THREAD_COUNT=%q RAMP_UP_SECONDS=%q TEST_DURATION_SECONDS=%q THINK_TIME_MIN_MS=%q THINK_TIME_MAX_MS=%q\n' \
               "$THREAD_COUNT" "$RAMP_UP_SECONDS" "$TEST_DURATION_SECONDS" "$THINK_TIME_MIN_MS" "$THINK_TIME_MAX_MS"
             tail -n +2 perf-tests/run-on-instance.sh
@@ -302,7 +309,9 @@ jobs:
           # --- Summary page ---
           {
             echo "### Performance test ${RUN_ID}"
-            echo "Results (private bucket): \`${uri}\` — open \`report/index.html\` after downloading."
+            echo "Results (private bucket): \`${uri}\`"
+            echo
+            echo "**HTML report:** download \`${uri}report.zip\`, unzip it, and open \`report/index.html\`."
             echo
             if $have_stats; then
               echo "| Request | Samples | Errors % | Mean ms | p90 ms | p99 ms | Req/s |"

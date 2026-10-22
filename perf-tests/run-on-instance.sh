@@ -1,16 +1,16 @@
 #!/bin/bash
 # EC2 user data for one performance-test run, launched by .github/workflows/performance-test.yml. The workflow
 # prepends the run's settings as shell variables:
-#   BUCKET RUN_ID JMETER_VERSION JMETER_HEAP MAX_MINUTES
+#   BUCKET RUN_ID JMETER_VERSION JMETER_HEAP MAX_MINUTES RUN_SCRIPT
 #   THREAD_COUNT RAMP_UP_SECONDS TEST_DURATION_SECONDS THINK_TIME_MIN_MS THINK_TIME_MAX_MS
-# Pulls Java (dnf), JMeter and the test inputs (plan, config, test data, zip-pool) from S3, runs the test, writes
-# results/ and finally DONE to s3://$BUCKET/runs/$RUN_ID/, then shuts down — which terminates the instance (launch
-# template setting). Everything printed here ends up in results/run.log in S3.
+# Pulls Java (dnf), JMeter and the test inputs (run script, plan, config, test data, zip-pool) from S3, runs the
+# run script, writes results/ and finally DONE to s3://$BUCKET/runs/$RUN_ID/, then shuts down — which terminates the
+# instance (launch template setting). Everything printed here ends up in results/run.log in S3.
 set -euo pipefail
 
 RUN_URI="s3://${BUCKET}/runs/${RUN_ID}"
 WORK=/opt/perf
-TESTS="$WORK/tests" # same layout as perf-tests/: plan.jmx, config.properties, config/test-data.csv, zip-pool/
+TESTS="$WORK/tests" # same layout as perf-tests/: the run script, plan, config/, zip-pool/
 mkdir -p "$WORK/results"
 exec > >(tee "$WORK/results/run.log") 2>&1
 
@@ -20,15 +20,40 @@ log "▶ [1/6] Instance started for run ${RUN_ID}"
 log "  CPUs: $(nproc), memory: $(free -g | awk '/Mem:/ {print $2}') GiB, free disk: $(df -h / | awk 'NR==2 {print $4}')"
 log "  Load: ${THREAD_COUNT} users, ${RAMP_UP_SECONDS}s ramp-up, ${TEST_DURATION_SECONDS}s duration," \
   "think time ${THINK_TIME_MIN_MS}-${THINK_TIME_MAX_MS} ms"
-log "  JMeter ${JMETER_VERSION}, heap ${JMETER_HEAP}"
+log "  JMeter ${JMETER_VERSION}, heap ${JMETER_HEAP}, run script ${RUN_SCRIPT}"
 
 # Hard cap: the instance terminates after MAX_MINUTES even if JMeter hangs.
 shutdown -h "+${MAX_MINUTES}"
 log "  Safety timer set: the instance terminates in ${MAX_MINUTES} min no matter what"
 
+# The run script writes timestamped files to results/ (e.g. dryrun_<time>.jtl); give the main ones the fixed names
+# the workflow's summary and report.zip use, and keep everything else as is.
+collect_results() {
+  local f
+  for f in "$TESTS"/results/*; do
+    [[ -e "$f" ]] || continue
+    case "$(basename "$f")" in
+      *_report_*)   mv "$f" "$WORK/results/report" ;;      # dryrun_report_<time>/ → report/
+      *_[0-9]*.jtl) mv "$f" "$WORK/results/results.jtl" ;; # dryrun_<time>.jtl     → results.jtl
+      *_[0-9]*.log) mv "$f" "$WORK/results/jmeter.log" ;;  # dryrun_<time>.log     → jmeter.log
+      *)            mv "$f" "$WORK/results/" ;;            # e.g. the plan's own dryrun.jtl
+    esac
+  done
+}
+
+# The report is index.html plus its content/ and sbadmin2-*/ folders; the S3 console can't download a folder, so
+# also ship it as one zip (Python's zipfile is already on Amazon Linux).
+zip_report() {
+  [[ -d "$WORK/results/report" ]] || return 0
+  (cd "$WORK/results" && python3 -m zipfile -c report.zip report/)
+  log "  Packed the HTML report into results/report.zip ($(du -h "$WORK/results/report.zip" | cut -f1))"
+}
+
 finish() {
   local code=$?
   log "▶ [6/6] Finishing (exit code ${code})"
+  collect_results || true
+  zip_report || true
   # Logged before the upload so these lines are in the run.log that reaches S3.
   log "  Uploading results to ${RUN_URI}/results/, then writing the DONE marker the GitHub workflow waits for"
   log "✔ After that the instance shuts down and terminates itself."
@@ -47,29 +72,22 @@ aws s3 cp --only-show-errors "s3://${BUCKET}/tools/apache-jmeter-${JMETER_VERSIO
 tar -xzf "$WORK/apache-jmeter-${JMETER_VERSION}.tgz" -C "$WORK"
 log "✔ JMeter unpacked to $WORK/apache-jmeter-${JMETER_VERSION}"
 
-log "▶ [4/6] Copying the test plan, config, test data and zip-pool from ${RUN_URI}/inputs/"
+log "▶ [4/6] Copying the run script, test plan, config, test data and zip-pool from ${RUN_URI}/inputs/"
 aws s3 cp --recursive --only-show-errors "${RUN_URI}/inputs/" "$TESTS/"
 log "✔ Test inputs ready: $(find "$TESTS/zip-pool" -name '*.zip' | wc -l) ZIPs in the pool"
 
-# bin/jmeter reads its heap from HEAP (default -Xms1g -Xmx1g).
+# bin/jmeter reads its heap from HEAP (default -Xms1g -Xmx1g); the run script calls `jmeter` from the PATH.
 export HEAP="$JMETER_HEAP"
+export PATH="$WORK/apache-jmeter-${JMETER_VERSION}/bin:$PATH"
 
-# Run from inside $TESTS: the test plan finds config/test-data.csv and zip-pool/ by relative path.
-# -q adds config.properties on top of JMeter's own jmeter.properties (-p would replace it and break the HTML
-# report); the -J values are applied last, so they override the same keys in config.properties.
-# result.file is the plan's own extra results file; point it into results/ so it is uploaded too.
-log "▶ [5/6] Running JMeter (non-GUI mode) — this is the actual load test"
+# Run from inside $TESTS: the run script and the test plan find their files by relative path. The -J values are the
+# workflow inputs; the script passes them to JMeter, where they override the same keys in its config file.
+log "▶ [5/6] Running ${RUN_SCRIPT} — this is the actual load test"
 cd "$TESTS"
-"$WORK/apache-jmeter-${JMETER_VERSION}/bin/jmeter" -n \
-  -t "$TESTS/plan.jmx" \
-  -q "$TESTS/config.properties" \
+bash "./${RUN_SCRIPT}" \
   -Jthread.count="$THREAD_COUNT" \
   -Jramp.up.seconds="$RAMP_UP_SECONDS" \
   -Jtest.duration.seconds="$TEST_DURATION_SECONDS" \
   -Jthink.time.min.ms="$THINK_TIME_MIN_MS" \
-  -Jthink.time.max.ms="$THINK_TIME_MAX_MS" \
-  -Jresult.file="$WORK/results/plan-results.jtl" \
-  -l "$WORK/results/results.jtl" \
-  -j "$WORK/results/jmeter.log" \
-  -e -o "$WORK/results/report"
-log "✔ JMeter finished: $(($(wc -l < "$WORK/results/results.jtl") - 1)) requests recorded, HTML report generated"
+  -Jthink.time.max.ms="$THINK_TIME_MAX_MS"
+log "✔ ${RUN_SCRIPT} finished"
