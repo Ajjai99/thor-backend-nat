@@ -20,13 +20,8 @@ if ! command -v jmeter &>/dev/null; then
     exit 1
 fi
 
-if [[ ! -f "${SCRIPT_DIR}/config/clients.csv" ]]; then
-    echo "ERROR: config/clients.csv not found. Populate it with real API keys first."
-    exit 1
-fi
-
-if [[ ! -f "${SCRIPT_DIR}/config/tasks.csv" ]]; then
-    echo "ERROR: config/tasks.csv not found. Populate it with real task/source IDs first."
+if [[ ! -f "${SCRIPT_DIR}/config/test-data.csv" ]]; then
+    echo "ERROR: config/test-data.csv not found. Populate it with real client, task and source IDs first."
     exit 1
 fi
 
@@ -45,7 +40,7 @@ echo ""
 jmeter \
     -n \
     -t "${SCRIPT_DIR}/test-plan.jmx" \
-    -p "${SCRIPT_DIR}/config/config.properties" \
+    -p "${SCRIPT_DIR}/config/config.ec2.properties" \
     -l "${RESULT_FILE}" \
     -j "${LOG_FILE}" \
     -Jresult.file="${RESULT_FILE}" \
