@@ -1,2 +1,5 @@
+# The repo root ignores *.zip; the test plan uploads these, so they must be committed.
+!zip-pool/**/*.zip
+
 # JMeter run output (.jtl results, logs, HTML reports)
 results/
