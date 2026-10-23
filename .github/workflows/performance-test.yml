@@ -50,7 +50,7 @@ env:
   # Test inputs sent to the instance (and nothing else from perf-tests/), all paths inside perf-tests/.
   # The instance runs RUN_SCRIPT, which refers to the plan and config by name: rename them there too.
   RUN_SCRIPT: perf-tests/run.sh
-  TEST_PLAN: perf-tests/test-plan 1.jmx
+  TEST_PLAN: perf-tests/test-plan 2.jmx
   CONFIG_FILE: perf-tests/config/config.ec2.properties
   TEST_DATA: perf-tests/config/test-data.csv
   ZIP_POOL: perf-tests/zip-pool

@@ -39,7 +39,7 @@ echo ""
 
 jmeter \
     -n \
-    -t "${SCRIPT_DIR}/test-plan 1.jmx" \
+    -t "${SCRIPT_DIR}/test-plan 2.jmx" \
     -p "${SCRIPT_DIR}/config/config.ec2.properties" \
     -l "${RESULT_FILE}" \
     -j "${LOG_FILE}" \
